@@ -3,7 +3,7 @@ import Testing
 
 @testable import TailregCore
 
-@Suite
+@Suite(.serialized)
 struct `FileLock tests` {
   init() {
     guard ProcessInfo.processInfo.environment["TAILREG_FILELOCK_DEBUG"] != nil else { return }

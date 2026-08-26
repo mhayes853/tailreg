@@ -2,7 +2,7 @@ import Foundation
 import TailregCore
 import Testing
 
-@Suite
+@Suite(.serialized)
 struct `SystemProcessRunner tests` {
   private let runner = SystemProcessRunner()
 
