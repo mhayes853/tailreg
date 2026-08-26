@@ -1,5 +1,5 @@
 {
-  "originHash" : "dca31e7b1a5ecdab1cd8f30eb0016d4fe6e84facb02888a2b1427ee8d03cff27",
+  "originHash" : "ca82af75409c34fbf92230da88bba229481c672dc77381880b54b4a5d521f45a",
   "pins" : [
     {
       "identity" : "async-http-client",
@@ -348,8 +348,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/mhayes853/swift-uuidv7.git",
       "state" : {
-        "branch" : "t3code/update-sqlite-minimum-platforms",
-        "revision" : "a26bdea498f33a66d871b95fd16947568818e96c"
+        "revision" : "6351d90af5b04b25f0e4ad28aa51836fda886665",
+        "version" : "0.6.2"
       }
     },
     {

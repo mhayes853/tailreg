@@ -28,7 +28,7 @@ let package = Package(
         ),
         .package(
             url: "https://github.com/mhayes853/swift-uuidv7.git",
-            branch: "t3code/update-sqlite-minimum-platforms",
+            from: "0.6.2",
             traits: ["SwiftUUIDV7SQLiteData"]
         )
     ],
