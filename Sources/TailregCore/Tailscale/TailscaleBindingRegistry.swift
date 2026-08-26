@@ -1,18 +1,18 @@
 import Foundation
 
-public actor TailscaleBindingRegistry {
+actor TailscaleBindingRegistry {
   static let currentVersion = 1
 
-  public let path: String
+  let path: String
   private let fileManager = FileManager.default
 
-  public init(path: String = TailscaleBindingRegistry.defaultPath()) {
+  init(path: String) {
     self.path = path
   }
 
   // MARK: - Access
 
-  public func records() throws -> [TailscaleBindingRecord] {
+  func records() throws -> [TailscaleBindingRecord] {
     guard let data = fileManager.contents(atPath: path), !data.isEmpty else { return [] }
     do {
       return try Self.decoder.decode(Envelope.self, from: data).bindings
@@ -21,7 +21,7 @@ public actor TailscaleBindingRegistry {
     }
   }
 
-  public func add(_ record: TailscaleBindingRecord) throws {
+  func add(_ record: TailscaleBindingRecord) throws {
     var current = try records()
     current.removeAll {
       $0.tailnetPort == record.tailnetPort
@@ -32,7 +32,7 @@ public actor TailscaleBindingRegistry {
     try replaceAll(with: current)
   }
 
-  public func removeClaim(
+  func removeClaim(
     tailnetPort: Int,
     proto: TailscaleServeProtocol,
     mountPath: String
@@ -44,7 +44,7 @@ public actor TailscaleBindingRegistry {
     try replaceAll(with: remaining)
   }
 
-  public func replaceAll(with records: [TailscaleBindingRecord]) throws {
+  func replaceAll(with records: [TailscaleBindingRecord]) throws {
     let data = try Self.encoder.encode(
       Envelope(version: Self.currentVersion, bindings: records)
     )
@@ -75,16 +75,4 @@ public actor TailscaleBindingRegistry {
     return encoder
   }()
 
-  public static func defaultPath(
-    environment: [String: String] = ProcessInfo.processInfo.environment
-  ) -> String {
-    let home = environment["HOME"] ?? NSHomeDirectory()
-    #if os(macOS)
-      return "\(home)/Library/Application Support/tailreg/bindings.json"
-    #else
-      let stateHome =
-        environment["XDG_STATE_HOME"].flatMap { $0.isEmpty ? nil : $0 } ?? "\(home)/.local/state"
-      return "\(stateHome)/tailreg/bindings.json"
-    #endif
-  }
 }

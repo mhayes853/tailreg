@@ -1,5 +1,3 @@
-import Foundation
-
 enum Fixtures {
   static let liveServeStatus = """
     {
@@ -52,6 +50,4 @@ enum Fixtures {
       "Self": { "DNSName": "omarchy.tailc6bff1.ts.net." }
     }
     """
-
-  static func data(_ text: String) -> Data { Data(text.utf8) }
 }

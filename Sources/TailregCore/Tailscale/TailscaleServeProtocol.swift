@@ -4,9 +4,9 @@ public enum TailscaleServeProtocol: String, Sendable, Codable, CaseIterable, Equ
   case tcp
   case tlsTerminatedTCP = "tls-terminated-tcp"
 
-  public var flagName: String { "--\(rawValue)" }
+  var flagName: String { "--\(rawValue)" }
 
-  public var urlScheme: String? {
+  var urlScheme: String? {
     switch self {
     case .https: "https"
     case .http: "http"

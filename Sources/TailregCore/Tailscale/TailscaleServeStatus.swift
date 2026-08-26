@@ -1,7 +1,7 @@
 import Foundation
 
-public enum TailscaleServeStatus {
-  public static func decode(_ data: Data, hostname: String) throws -> [TailscaleBinding] {
+enum TailscaleServeStatus {
+  static func decode(_ data: Data, hostname: String) throws -> [TailscaleBinding] {
     let trimmed = String(decoding: data, as: UTF8.self)
       .trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty, trimmed != "null" else { return [] }

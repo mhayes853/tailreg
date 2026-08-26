@@ -56,6 +56,14 @@ final class FakeTailscaleDaemon: ProcessRunner, @unchecked Sendable {
     argvHistory.filter { $0.starts(with: prefix) }
   }
 
+  func addHandlerExternally(_ handler: Handler) {
+    lock.withLock { handlers.append(handler) }
+  }
+
+  func removeAllHandlersExternally() {
+    lock.withLock { handlers.removeAll() }
+  }
+
   // MARK: - ProcessRunner
 
   func run(
@@ -67,8 +75,6 @@ final class FakeTailscaleDaemon: ProcessRunner, @unchecked Sendable {
     lock.withLock { recorded.append(arguments) }
 
     switch arguments.first {
-    case "version":
-      return Self.success("1.102.3\n  tailscale commit: abc123")
     case "status":
       return Self.success(
         """
@@ -132,8 +138,7 @@ final class FakeTailscaleDaemon: ProcessRunner, @unchecked Sendable {
           tailnetPort: tailnetPort,
           mountPath: mountPath,
           localPort: localPort,
-          proto: proto,
-          funnel: arguments.first == "funnel"
+          proto: proto
         )
       )
     }

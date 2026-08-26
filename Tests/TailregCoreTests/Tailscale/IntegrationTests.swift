@@ -14,29 +14,6 @@ struct `Tailscale integration tests` {
   }
 
   @Test
-  func `Detects The Installation And Reads Node Status`() async throws {
-    let temp = try TempDirectory()
-
-    let installation = try await makeBinder(temp).installation()
-
-    #expect(installation.binaryPath.hasSuffix("tailscale"))
-    #expect(!installation.version.isEmpty)
-    #expect(!installation.dnsName.hasSuffix("."))
-  }
-
-  @Test
-  func `Reads Existing Configuration Without Claiming It`() async throws {
-    let temp = try TempDirectory()
-    let binder = try makeBinder(temp)
-
-    let before = try await binder.bindings()
-    let after = try await binder.bindings()
-
-    #expect(before.map(\.tailnetPort) == after.map(\.tailnetPort))
-    #expect(before.allSatisfy { $0.isManaged == false })
-  }
-
-  @Test
   func `Binds And Unbinds A Real Local Server`() async throws {
     let temp = try TempDirectory()
     let binder = try makeBinder(temp)
@@ -51,7 +28,7 @@ struct `Tailscale integration tests` {
     #expect(binding.tailnetPort == Self.integrationPort)
     #expect(binding.localPort == listener.port)
     #expect(binding.isManaged)
-    #expect(try await binder.managedBindings().contains { $0.tailnetPort == Self.integrationPort })
+    #expect(binding.hostname.hasSuffix(".ts.net"))
 
     let removed = try await binder.unbind(tailnetPort: Self.integrationPort)
 
@@ -75,16 +52,21 @@ struct `Tailscale integration tests` {
   func `Removing One Mount Path Leaves The Others On That Port Intact`() async throws {
     let temp = try TempDirectory()
     let binder = try makeBinder(temp)
-    let listener = try LoopbackListener()
-    defer { listener.stop() }
+    let alpha = try LoopbackListener()
+    let beta = try LoopbackListener()
+    defer {
+      alpha.stop()
+      beta.stop()
+    }
+    defer { Task { try? await binder.unbind(tailnetPort: Self.integrationPort) } }
 
     try await binder.bind(
-      localPort: listener.port,
+      localPort: alpha.port,
       to: .explicit(Self.integrationPort),
       mountPath: "/alpha"
     )
     try await binder.bind(
-      localPort: listener.port,
+      localPort: beta.port,
       to: .explicit(Self.integrationPort),
       mountPath: "/beta"
     )
@@ -92,15 +74,10 @@ struct `Tailscale integration tests` {
     let both = try await binder.bindings().filter { $0.tailnetPort == Self.integrationPort }
     #expect(both.map(\.mountPath).sorted() == ["/alpha", "/beta"])
 
-    let cli = TailscaleCLI(
-      binaryPath: try TailscaleLocator().locate(),
-      runner: SystemProcessRunner()
-    )
-    try await cli.serveOff(tailnetPort: Self.integrationPort, proto: .https, mountPath: "/alpha")
+    try await binder.unbind(localPort: alpha.port)
 
     let survivors = try await binder.bindings().filter { $0.tailnetPort == Self.integrationPort }
     #expect(survivors.map(\.mountPath) == ["/beta"])
-
-    try await binder.unbind(tailnetPort: Self.integrationPort)
+    #expect(survivors.map(\.localPort) == [beta.port])
   }
 }

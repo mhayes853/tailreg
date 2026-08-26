@@ -4,52 +4,48 @@ public actor TailscaleBinder {
   private let cli: TailscaleCLI
   private let portProbe: any PortProbe
   private let registry: TailscaleBindingRegistry
-  private let now: @Sendable () -> Date
-
   private let gate = AsyncGate()
 
   public init(
-    cli: TailscaleCLI,
+    binaryPath: String,
+    runner: any ProcessRunner,
     portProbe: any PortProbe,
-    registry: TailscaleBindingRegistry,
-    now: @escaping @Sendable () -> Date = { Date() }
+    registryPath: String = TailscaleBinder.defaultRegistryPath()
   ) {
-    self.cli = cli
+    self.cli = TailscaleCLI(binaryPath: binaryPath, runner: runner)
     self.portProbe = portProbe
-    self.registry = registry
-    self.now = now
+    self.registry = TailscaleBindingRegistry(path: registryPath)
   }
 
   public static func standard(
     searchPaths: [String] = TailscaleLocator.defaultSearchPaths(),
-    registryPath: String = TailscaleBindingRegistry.defaultPath()
+    registryPath: String = TailscaleBinder.defaultRegistryPath()
   ) throws -> TailscaleBinder {
-    let binaryPath = try TailscaleLocator(searchPaths: searchPaths).locate()
-    return TailscaleBinder(
-      cli: TailscaleCLI(binaryPath: binaryPath, runner: SystemProcessRunner()),
+    TailscaleBinder(
+      binaryPath: try TailscaleLocator(searchPaths: searchPaths).locate(),
+      runner: SystemProcessRunner(),
       portProbe: SystemPortProbe(),
-      registry: TailscaleBindingRegistry(path: registryPath)
+      registryPath: registryPath
     )
+  }
+
+  public static func defaultRegistryPath(
+    environment: [String: String] = ProcessInfo.processInfo.environment
+  ) -> String {
+    let home = environment["HOME"] ?? NSHomeDirectory()
+    #if os(macOS)
+      return "\(home)/Library/Application Support/tailreg/bindings.json"
+    #else
+      let stateHome =
+        environment["XDG_STATE_HOME"].flatMap { $0.isEmpty ? nil : $0 } ?? "\(home)/.local/state"
+      return "\(stateHome)/tailreg/bindings.json"
+    #endif
   }
 
   // MARK: - Inspection
 
-  public func installation() async throws -> TailscaleInstallation {
-    let status = try await cli.status()
-    return TailscaleInstallation(
-      binaryPath: cli.binaryPath,
-      version: try await cli.version(),
-      backendState: status.backendState,
-      dnsName: status.dnsName
-    )
-  }
-
   public func bindings() async throws -> [TailscaleBinding] {
     try await gate.withGate { try await self.snapshot() }
-  }
-
-  public func managedBindings() async throws -> [TailscaleBinding] {
-    try await gate.withGate { try await self.snapshot().filter(\.isManaged) }
   }
 
   // MARK: - Binding
@@ -58,18 +54,10 @@ public actor TailscaleBinder {
   public func bind(
     localPort: Int,
     to tailnetPort: TailscaleTailnetPort = .auto,
-    proto: TailscaleServeProtocol = .https,
-    mountPath: String = "/",
-    funnel: Bool = false
+    mountPath: String = "/"
   ) async throws -> TailscaleBinding {
     try await gate.withGate {
-      try await self.performBind(
-        localPort: localPort,
-        to: tailnetPort,
-        proto: proto,
-        mountPath: mountPath,
-        funnel: funnel
-      )
+      try await self.performBind(localPort: localPort, to: tailnetPort, mountPath: mountPath)
     }
   }
 
@@ -101,9 +89,7 @@ public actor TailscaleBinder {
   private func performBind(
     localPort: Int,
     to tailnetPort: TailscaleTailnetPort,
-    proto: TailscaleServeProtocol,
-    mountPath: String,
-    funnel: Bool
+    mountPath: String
   ) async throws -> TailscaleBinding {
     let status = try await requireRunning()
 
@@ -118,23 +104,21 @@ public actor TailscaleBinder {
       TailscaleBindingRecord(
         localPort: localPort,
         tailnetPort: resolvedPort,
-        proto: proto,
+        proto: .https,
         mountPath: mountPath,
-        createdAt: now()
+        createdAt: Date()
       )
     )
     do {
       try await cli.serve(
         localPort: localPort,
         tailnetPort: resolvedPort,
-        proto: proto,
-        mountPath: mountPath,
-        funnel: funnel
+        mountPath: mountPath
       )
     } catch {
       try? await registry.removeClaim(
         tailnetPort: resolvedPort,
-        proto: proto,
+        proto: .https,
         mountPath: mountPath
       )
       throw error
@@ -143,7 +127,7 @@ public actor TailscaleBinder {
     let confirmed = try await cli.serveStatus(hostname: status.dnsName)
     guard
       var binding = confirmed.first(where: {
-        $0.tailnetPort == resolvedPort && $0.proto == proto && $0.mountPath == mountPath
+        $0.tailnetPort == resolvedPort && $0.mountPath == mountPath
       })
     else {
       throw TailscaleError.bindingNotFound

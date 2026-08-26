@@ -1,7 +1,7 @@
 import Foundation
 
 public struct TailscaleLocator: Sendable {
-  public let searchPaths: [String]
+  private let searchPaths: [String]
   private let fileManager: FileManager
 
   public init(searchPaths: [String] = TailscaleLocator.defaultSearchPaths()) {

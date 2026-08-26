@@ -47,20 +47,4 @@ struct `TailscaleBinding tests` {
     #expect(binding(tailnetPort: 443).localPort == 3000)
     #expect(binding(tailnetPort: 443, target: .path("/var/www")).localPort == nil)
   }
-
-  @Test
-  func `Matches A Claim On Serve Coordinates Rather Than Creation Time`() {
-    let record = TailscaleBindingRecord(
-      localPort: 3000,
-      tailnetPort: 443,
-      proto: .https,
-      mountPath: "/",
-      createdAt: Date(timeIntervalSince1970: 0)
-    )
-
-    #expect(record.claims(binding(tailnetPort: 443)))
-    #expect(record.claims(binding(tailnetPort: 8443)) == false)
-    #expect(record.claims(binding(tailnetPort: 443, mountPath: "/api")) == false)
-    #expect(record.claims(binding(tailnetPort: 443, proto: .http)) == false)
-  }
 }

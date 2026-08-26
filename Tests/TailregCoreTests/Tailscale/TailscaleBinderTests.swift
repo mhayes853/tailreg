@@ -4,12 +4,10 @@ import Testing
 
 @Suite
 struct `TailscaleBinder tests` {
-  private let fixedDate = Date(timeIntervalSince1970: 1_700_000_000)
-
   private struct Harness {
     let binder: TailscaleBinder
     let daemon: FakeTailscaleDaemon
-    let registry: TailscaleBindingRegistry
+    let registryPath: String
     let temp: TempDirectory
   }
 
@@ -17,7 +15,8 @@ struct `TailscaleBinder tests` {
     handlers: [FakeTailscaleDaemon.Handler] = [],
     listening: Set<Int> = [],
     backendState: String = "Running",
-    serveFailure: (stderr: String, exitCode: Int32)? = nil
+    serveFailure: (stderr: String, exitCode: Int32)? = nil,
+    registryComponent: String = "bindings.json"
   ) throws -> Harness {
     let temp = try TempDirectory()
     let daemon = FakeTailscaleDaemon(
@@ -25,32 +24,27 @@ struct `TailscaleBinder tests` {
       backendState: backendState,
       serveFailure: serveFailure
     )
-    let registry = TailscaleBindingRegistry(path: temp.path("bindings.json"))
+    let registryPath = temp.path(registryComponent)
 
     return Harness(
       binder: TailscaleBinder(
-        cli: TailscaleCLI(binaryPath: "/usr/bin/tailscale", runner: daemon),
+        binaryPath: "/usr/bin/tailscale",
+        runner: daemon,
         portProbe: StubPortProbe(listening: listening),
-        registry: registry,
-        now: { self.fixedDate }
+        registryPath: registryPath
       ),
       daemon: daemon,
-      registry: registry,
+      registryPath: registryPath,
       temp: temp
     )
   }
 
-  private func claim(
-    localPort: Int,
-    tailnetPort: Int,
-    mountPath: String = "/"
-  ) -> TailscaleBindingRecord {
-    TailscaleBindingRecord(
-      localPort: localPort,
-      tailnetPort: tailnetPort,
-      proto: .https,
-      mountPath: mountPath,
-      createdAt: fixedDate
+  private func reopened(_ harness: Harness) -> TailscaleBinder {
+    TailscaleBinder(
+      binaryPath: "/usr/bin/tailscale",
+      runner: harness.daemon,
+      portProbe: StubPortProbe(),
+      registryPath: harness.registryPath
     )
   }
 
@@ -71,7 +65,19 @@ struct `TailscaleBinder tests` {
         ["serve", "--bg", "--yes", "--https=443", "http://127.0.0.1:3000"]
       ]
     )
-    #expect(try await harness.registry.records() == [claim(localPort: 3000, tailnetPort: 443)])
+  }
+
+  @Test
+  func `Adds Set Path Only For A Non Root Mount Path`() async throws {
+    let harness = try makeHarness(listening: [3000])
+
+    try await harness.binder.bind(localPort: 3000, to: .explicit(8443), mountPath: "/api")
+
+    #expect(
+      harness.daemon.argv(startingWith: ["serve", "--bg"]) == [
+        ["serve", "--bg", "--yes", "--https=8443", "--set-path=/api", "http://127.0.0.1:3000"]
+      ]
+    )
   }
 
   @Test
@@ -82,7 +88,6 @@ struct `TailscaleBinder tests` {
       try await harness.binder.bind(localPort: 3000)
     }
     #expect(harness.daemon.configuredHandlers.isEmpty)
-    #expect(try await harness.registry.records().isEmpty)
   }
 
   @Test
@@ -124,21 +129,17 @@ struct `TailscaleBinder tests` {
   }
 
   @Test
-  func `Shares An Explicit Port When The Mount Path Differs`() async throws {
-    let harness = try makeHarness(
-      handlers: [.init(tailnetPort: 443, localPort: 3773)],
-      listening: [3000]
-    )
+  func `Hosts Several Local Servers On One Port Under Different Mount Paths`() async throws {
+    let harness = try makeHarness(listening: [3000, 4000, 5000])
 
-    let binding = try await harness.binder.bind(
-      localPort: 3000,
-      to: .explicit(443),
-      mountPath: "/api"
-    )
+    try await harness.binder.bind(localPort: 3000, to: .explicit(443), mountPath: "/alpha")
+    try await harness.binder.bind(localPort: 4000, to: .explicit(443), mountPath: "/beta")
+    try await harness.binder.bind(localPort: 5000, to: .explicit(443), mountPath: "/gamma")
 
-    #expect(binding.mountPath == "/api")
-    #expect(binding.localPort == 3000)
-    #expect(harness.daemon.configuredHandlers.count == 2)
+    let bindings = try await harness.binder.bindings()
+    #expect(bindings.map(\.mountPath) == ["/alpha", "/beta", "/gamma"])
+    #expect(bindings.map(\.localPort) == [3000, 4000, 5000])
+    #expect(bindings.allSatisfy { $0.isManaged })
   }
 
   @Test
@@ -151,7 +152,9 @@ struct `TailscaleBinder tests` {
     await #expect(throws: TailscaleError.self) {
       try await harness.binder.bind(localPort: 3000)
     }
-    #expect(try await harness.registry.records().isEmpty)
+
+    harness.daemon.addHandlerExternally(.init(tailnetPort: 443, localPort: 3000))
+    #expect(try await harness.binder.bindings().allSatisfy { $0.isManaged == false })
   }
 
   @Test
@@ -175,10 +178,9 @@ struct `TailscaleBinder tests` {
 
     #expect(Set(bound.map(\.tailnetPort)) == [443, 8443])
     #expect(harness.daemon.configuredHandlers.count == 2)
-    #expect(try await harness.registry.records().count == 2)
   }
 
-  // MARK: - Inspection
+  // MARK: - Ownership
 
   @Test
   func `Reports Handlers Tailreg Never Created As Foreign`() async throws {
@@ -188,26 +190,65 @@ struct `TailscaleBinder tests` {
 
     #expect(bindings.count == 1)
     #expect(bindings[0].isManaged == false)
-    #expect(try await harness.binder.managedBindings().isEmpty)
+  }
+
+  @Test
+  func `Remembers Ownership Across Binder Instances`() async throws {
+    let harness = try makeHarness(listening: [3000])
+    try await harness.binder.bind(localPort: 3000)
+
+    let bindings = try await reopened(harness).bindings()
+
+    #expect(bindings.count == 1)
+    #expect(bindings[0].isManaged)
   }
 
   @Test
   func `Discards A Claim Whose Handler Vanished`() async throws {
-    let harness = try makeHarness()
-    try await harness.registry.add(claim(localPort: 3000, tailnetPort: 443))
+    let harness = try makeHarness(listening: [3000])
+    try await harness.binder.bind(localPort: 3000)
 
+    harness.daemon.removeAllHandlersExternally()
     _ = try await harness.binder.bindings()
+    harness.daemon.addHandlerExternally(.init(tailnetPort: 443, localPort: 3000))
 
-    #expect(try await harness.registry.records().isEmpty)
+    #expect(try await harness.binder.bindings().allSatisfy { $0.isManaged == false })
   }
 
   @Test
-  func `Keeps A Claim That Still Matches A Live Handler`() async throws {
-    let harness = try makeHarness(handlers: [.init(tailnetPort: 443, localPort: 3000)])
-    try await harness.registry.add(claim(localPort: 3000, tailnetPort: 443))
+  func `Does Not Extend A Claim To Another Mount Path On The Same Port`() async throws {
+    let harness = try makeHarness(listening: [3000])
+    try await harness.binder.bind(localPort: 3000, to: .explicit(443))
+    harness.daemon.addHandlerExternally(
+      .init(tailnetPort: 443, mountPath: "/api", localPort: 9999)
+    )
 
-    #expect(try await harness.binder.bindings()[0].isManaged)
-    #expect(try await harness.registry.records().count == 1)
+    let bindings = try await harness.binder.bindings()
+
+    #expect(bindings.first { $0.mountPath == "/" }?.isManaged == true)
+    #expect(bindings.first { $0.mountPath == "/api" }?.isManaged == false)
+  }
+
+  @Test
+  func `Creates The Registry Directory On First Bind`() async throws {
+    let harness = try makeHarness(
+      listening: [3000],
+      registryComponent: "nested/deeper/bindings.json"
+    )
+
+    try await harness.binder.bind(localPort: 3000)
+
+    #expect(FileManager.default.fileExists(atPath: harness.registryPath))
+  }
+
+  @Test
+  func `Fails Loudly On A Corrupt Registry Rather Than Discarding Ownership`() async throws {
+    let harness = try makeHarness()
+    try Data("{ truncated".utf8).write(to: URL(fileURLWithPath: harness.registryPath))
+
+    await #expect(throws: TailscaleError.self) {
+      try await harness.binder.bindings()
+    }
   }
 
   // MARK: - Unbinding
@@ -240,20 +281,34 @@ struct `TailscaleBinder tests` {
   }
 
   @Test
-  func `Unbind All Leaves Handlers Tailreg Did Not Create Alone`() async throws {
-    let harness = try makeHarness(
-      handlers: [
-        .init(tailnetPort: 443, localPort: 3773),
-        .init(tailnetPort: 8443, localPort: 3000)
+  func `Removes One Mount Path Without Disturbing The Others`() async throws {
+    let harness = try makeHarness(listening: [3000, 4000])
+    try await harness.binder.bind(localPort: 3000, to: .explicit(443), mountPath: "/alpha")
+    try await harness.binder.bind(localPort: 4000, to: .explicit(443), mountPath: "/beta")
+
+    let removed = try await harness.binder.unbind(localPort: 3000)
+
+    #expect(removed.map(\.mountPath) == ["/alpha"])
+    #expect(
+      harness.daemon.argv(startingWith: ["serve", "--https=443"]) == [
+        ["serve", "--https=443", "--set-path=/alpha", "off"]
       ]
     )
-    try await harness.registry.add(claim(localPort: 3000, tailnetPort: 8443))
+    #expect(try await harness.binder.bindings().map(\.mountPath) == ["/beta"])
+  }
+
+  @Test
+  func `Unbind All Leaves Handlers Tailreg Did Not Create Alone`() async throws {
+    let harness = try makeHarness(
+      handlers: [.init(tailnetPort: 443, localPort: 3773)],
+      listening: [3000]
+    )
+    try await harness.binder.bind(localPort: 3000, to: .explicit(8443))
 
     let removed = try await harness.binder.unbindAll()
 
     #expect(removed.map(\.tailnetPort) == [8443])
     #expect(harness.daemon.configuredHandlers.map(\.tailnetPort) == [443])
-    #expect(try await harness.registry.records().isEmpty)
     #expect(harness.daemon.argvHistory.allSatisfy { $0 != ["serve", "reset"] })
   }
 

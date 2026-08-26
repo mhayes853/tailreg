@@ -1,25 +1,17 @@
 import Foundation
 
-public struct TailscaleCLI: Sendable {
-  public let binaryPath: String
+struct TailscaleCLI: Sendable {
+  let binaryPath: String
   private let runner: any ProcessRunner
 
-  public init(binaryPath: String, runner: any ProcessRunner) {
+  init(binaryPath: String, runner: any ProcessRunner) {
     self.binaryPath = binaryPath
     self.runner = runner
   }
 
   // MARK: - Reads
 
-  public func version() async throws -> String {
-    let result = try await invoke(["version"], allowingFailure: false)
-    return result.standardOutputText
-      .split(separator: "\n", maxSplits: 1)
-      .first
-      .map(String.init) ?? ""
-  }
-
-  public func status() async throws -> TailscaleStatus {
+  func status() async throws -> TailscaleStatus {
     let result = try await invoke(["status", "--json"], allowingFailure: true)
     guard !result.standardOutput.isEmpty else {
       throw mapFailure(argv: ["status", "--json"], result: result)
@@ -37,21 +29,19 @@ public struct TailscaleCLI: Sendable {
     }
   }
 
-  public func serveStatus(hostname: String) async throws -> [TailscaleBinding] {
+  func serveStatus(hostname: String) async throws -> [TailscaleBinding] {
     let result = try await invoke(["serve", "status", "--json"], allowingFailure: false)
     return try TailscaleServeStatus.decode(result.standardOutput, hostname: hostname)
   }
 
   // MARK: - Mutations
 
-  public func serve(
+  func serve(
     localPort: Int,
     tailnetPort: Int,
-    proto: TailscaleServeProtocol,
-    mountPath: String,
-    funnel: Bool
+    mountPath: String
   ) async throws {
-    var argv = [funnel ? "funnel" : "serve", "--bg", "--yes", "\(proto.flagName)=\(tailnetPort)"]
+    var argv = ["serve", "--bg", "--yes", "--https=\(tailnetPort)"]
     if mountPath != "/" {
       argv.append("--set-path=\(mountPath)")
     }
@@ -59,7 +49,7 @@ public struct TailscaleCLI: Sendable {
     _ = try await invoke(argv, allowingFailure: false)
   }
 
-  public func serveOff(
+  func serveOff(
     tailnetPort: Int,
     proto: TailscaleServeProtocol,
     mountPath: String
