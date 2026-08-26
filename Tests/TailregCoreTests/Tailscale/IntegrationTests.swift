@@ -10,7 +10,7 @@ struct `Tailscale integration tests` {
   static let integrationPort = 10000
 
   private func makeBinder(_ temp: TempDirectory) throws -> TailscaleBinder {
-    try TailscaleBinder.standard(registryPath: temp.path("bindings.json"))
+    try TailscaleBinder.standard(databasePath: temp.path("tailreg.sqlite"))
   }
 
   @Test

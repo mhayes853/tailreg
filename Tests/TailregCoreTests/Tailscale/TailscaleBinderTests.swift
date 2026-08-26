@@ -1,13 +1,14 @@
 import Foundation
-import TailregCore
 import Testing
+
+@testable import TailregCore
 
 @Suite
 struct `TailscaleBinder tests` {
   private struct Harness {
     let binder: TailscaleBinder
     let daemon: FakeTailscaleDaemon
-    let registryPath: String
+    let databasePath: String
     let temp: TempDirectory
   }
 
@@ -16,7 +17,8 @@ struct `TailscaleBinder tests` {
     listening: Set<Int> = [],
     backendState: String = "Running",
     serveFailure: (stderr: String, exitCode: Int32)? = nil,
-    registryComponent: String = "bindings.json"
+    databaseComponent: String = "tailreg.sqlite",
+    claimGracePeriod: TimeInterval = 0
   ) throws -> Harness {
     let temp = try TempDirectory()
     let daemon = FakeTailscaleDaemon(
@@ -24,27 +26,29 @@ struct `TailscaleBinder tests` {
       backendState: backendState,
       serveFailure: serveFailure
     )
-    let registryPath = temp.path(registryComponent)
+    let databasePath = temp.path(databaseComponent)
 
     return Harness(
       binder: TailscaleBinder(
         binaryPath: "/usr/bin/tailscale",
         runner: daemon,
         portProbe: StubPortProbe(listening: listening),
-        registryPath: registryPath
+        database: try openTailregDatabase(path: databasePath, kind: .queue),
+        claimGracePeriod: claimGracePeriod
       ),
       daemon: daemon,
-      registryPath: registryPath,
+      databasePath: databasePath,
       temp: temp
     )
   }
 
-  private func reopened(_ harness: Harness) -> TailscaleBinder {
+  private func reopened(_ harness: Harness) throws -> TailscaleBinder {
     TailscaleBinder(
       binaryPath: "/usr/bin/tailscale",
       runner: harness.daemon,
       portProbe: StubPortProbe(),
-      registryPath: harness.registryPath
+      database: try openTailregDatabase(path: harness.databasePath, kind: .queue),
+      claimGracePeriod: 0
     )
   }
 
@@ -230,25 +234,41 @@ struct `TailscaleBinder tests` {
   }
 
   @Test
-  func `Creates The Registry Directory On First Bind`() async throws {
+  func `Creates The Database Directory On First Use`() async throws {
     let harness = try makeHarness(
       listening: [3000],
-      registryComponent: "nested/deeper/bindings.json"
+      databaseComponent: "nested/deeper/tailreg.sqlite"
     )
 
     try await harness.binder.bind(localPort: 3000)
 
-    #expect(FileManager.default.fileExists(atPath: harness.registryPath))
+    #expect(FileManager.default.fileExists(atPath: harness.databasePath))
   }
 
   @Test
-  func `Fails Loudly On A Corrupt Registry Rather Than Discarding Ownership`() async throws {
-    let harness = try makeHarness()
-    try Data("{ truncated".utf8).write(to: URL(fileURLWithPath: harness.registryPath))
+  func `Fails Loudly On A Corrupt Database Rather Than Discarding Ownership`() throws {
+    let temp = try TempDirectory()
+    let databasePath = temp.path("tailreg.sqlite")
+    try Data("this is not a database".utf8).write(to: URL(fileURLWithPath: databasePath))
 
-    await #expect(throws: TailscaleError.self) {
-      try await harness.binder.bindings()
+    #expect(throws: TailscaleError.self) {
+      try openTailregDatabase(path: databasePath)
     }
+  }
+
+  @Test
+  func `Keeps A Claim That Is Younger Than The Grace Period`() async throws {
+    let harness = try makeHarness(
+      listening: [3000],
+      claimGracePeriod: TailscaleBinder.defaultClaimGracePeriod
+    )
+    try await harness.binder.bind(localPort: 3000)
+
+    harness.daemon.removeAllHandlersExternally()
+    _ = try await harness.binder.bindings()
+    harness.daemon.addHandlerExternally(.init(tailnetPort: 443, localPort: 3000))
+
+    #expect(try await harness.binder.bindings().allSatisfy(\.isManaged))
   }
 
   // MARK: - Unbinding

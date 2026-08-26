@@ -1,6 +1,7 @@
 import Foundation
-import TailregCore
 import Testing
+
+@testable import TailregCore
 
 @Suite
 struct `Serve status decoding tests` {
@@ -17,7 +18,7 @@ struct `Serve status decoding tests` {
       binaryPath: "/usr/bin/tailscale",
       runner: runner,
       portProbe: StubPortProbe(),
-      registryPath: temp.path("bindings.json")
+      database: try openTailregDatabase(path: temp.path("tailreg.sqlite"), kind: .queue)
     )
     .bindings()
   }

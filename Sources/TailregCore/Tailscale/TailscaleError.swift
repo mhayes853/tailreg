@@ -7,6 +7,7 @@ public enum TailscaleError: Error, Sendable, Equatable {
   case noAvailableTailnetPort
   case bindingNotFound
   case malformedOutput(command: String, detail: String)
-  case registryCorrupt(path: String, detail: String)
+  case databaseUnavailable(path: String, detail: String)
+  case lockUnavailable(path: String, detail: String)
   case commandFailed(argv: [String], exitCode: Int32, standardError: String)
 }

@@ -1,51 +1,53 @@
 import Foundation
+import SQLiteData
+import UUIDV7
 
 public actor TailscaleBinder {
+  public static let defaultClaimGracePeriod: TimeInterval = 30
+
   private let cli: TailscaleCLI
   private let portProbe: any PortProbe
-  private let registry: TailscaleBindingRegistry
+  private let database: any DatabaseWriter
+  private let fileLock: FileLock
+  private let claimGracePeriod: TimeInterval
   private let gate = AsyncGate()
 
   public init(
     binaryPath: String,
     runner: any ProcessRunner,
     portProbe: any PortProbe,
-    registryPath: String = TailscaleBinder.defaultRegistryPath()
+    database: any DatabaseWriter,
+    claimGracePeriod: TimeInterval = TailscaleBinder.defaultClaimGracePeriod
   ) {
     self.cli = TailscaleCLI(binaryPath: binaryPath, runner: runner)
     self.portProbe = portProbe
-    self.registry = TailscaleBindingRegistry(path: registryPath)
+    self.database = database
+    self.fileLock = FileLock(path: database.path + ".lock")
+    self.claimGracePeriod = claimGracePeriod
   }
 
   public static func standard(
     searchPaths: [String] = TailscaleLocator.defaultSearchPaths(),
-    registryPath: String = TailscaleBinder.defaultRegistryPath()
+    databasePath: String = defaultTailregDatabasePath(),
+    claimGracePeriod: TimeInterval = TailscaleBinder.defaultClaimGracePeriod
   ) throws -> TailscaleBinder {
     TailscaleBinder(
       binaryPath: try TailscaleLocator(searchPaths: searchPaths).locate(),
       runner: SystemProcessRunner(),
       portProbe: SystemPortProbe(),
-      registryPath: registryPath
+      database: try openTailregDatabase(path: databasePath),
+      claimGracePeriod: claimGracePeriod
     )
-  }
-
-  public static func defaultRegistryPath(
-    environment: [String: String] = ProcessInfo.processInfo.environment
-  ) -> String {
-    let home = environment["HOME"] ?? NSHomeDirectory()
-    #if os(macOS)
-      return "\(home)/Library/Application Support/tailreg/bindings.json"
-    #else
-      let stateHome =
-        environment["XDG_STATE_HOME"].flatMap { $0.isEmpty ? nil : $0 } ?? "\(home)/.local/state"
-      return "\(stateHome)/tailreg/bindings.json"
-    #endif
   }
 
   // MARK: - Inspection
 
   public func bindings() async throws -> [TailscaleBinding] {
-    try await gate.withGate { try await self.snapshot() }
+    try await gate.withGate {
+      try await self.fileLock.withLock(.shared) {
+        try await self.snapshot()
+      }
+    }
   }
 
   // MARK: - Binding
@@ -57,7 +59,9 @@ public actor TailscaleBinder {
     mountPath: String = "/"
   ) async throws -> TailscaleBinding {
     try await gate.withGate {
-      try await self.performBind(localPort: localPort, to: tailnetPort, mountPath: mountPath)
+      try await self.fileLock.withLock(.exclusive) {
+        try await self.performBind(localPort: localPort, to: tailnetPort, mountPath: mountPath)
+      }
     }
   }
 
@@ -66,21 +70,27 @@ public actor TailscaleBinder {
   @discardableResult
   public func unbind(tailnetPort: Int) async throws -> [TailscaleBinding] {
     try await gate.withGate {
-      try await self.performRemove { $0.tailnetPort == tailnetPort }
+      try await self.fileLock.withLock(.exclusive) {
+        try await self.performRemove { $0.tailnetPort == tailnetPort }
+      }
     }
   }
 
   @discardableResult
   public func unbind(localPort: Int) async throws -> [TailscaleBinding] {
     try await gate.withGate {
-      try await self.performRemove { $0.localPort == localPort }
+      try await self.fileLock.withLock(.exclusive) {
+        try await self.performRemove { $0.localPort == localPort }
+      }
     }
   }
 
   @discardableResult
   public func unbindAll() async throws -> [TailscaleBinding] {
     try await gate.withGate {
-      try await self.performRemove(\.isManaged)
+      try await self.fileLock.withLock(.exclusive) {
+        try await self.performRemove(\.isManaged)
+      }
     }
   }
 
@@ -99,16 +109,15 @@ public actor TailscaleBinder {
 
     let live = try await cli.serveStatus(hostname: status.dnsName)
     let resolvedPort = try resolveTailnetPort(tailnetPort, mountPath: mountPath, live: live)
-
-    try await registry.add(
-      TailscaleBindingRecord(
-        localPort: localPort,
-        tailnetPort: resolvedPort,
-        proto: .https,
-        mountPath: mountPath,
-        createdAt: Date()
-      )
+    let record = TailscaleBindingRecord(
+      localPort: localPort,
+      tailnetPort: resolvedPort,
+      proto: .https,
+      mountPath: mountPath,
+      createdAt: Date()
     )
+
+    try await claim(record)
     do {
       try await cli.serve(
         localPort: localPort,
@@ -116,7 +125,7 @@ public actor TailscaleBinder {
         mountPath: mountPath
       )
     } catch {
-      try? await registry.removeClaim(
+      try? await releaseClaim(
         tailnetPort: resolvedPort,
         proto: .https,
         mountPath: mountPath
@@ -146,7 +155,7 @@ public actor TailscaleBinder {
         proto: binding.proto,
         mountPath: binding.mountPath
       )
-      try await registry.removeClaim(
+      try await releaseClaim(
         tailnetPort: binding.tailnetPort,
         proto: binding.proto,
         mountPath: binding.mountPath
@@ -158,12 +167,23 @@ public actor TailscaleBinder {
   private func snapshot() async throws -> [TailscaleBinding] {
     let status = try await requireRunning()
     let live = try await cli.serveStatus(hostname: status.dnsName)
-    let records = try await registry.records()
-
-    let surviving = records.filter { record in live.contains(where: record.claims) }
-    if surviving.count != records.count {
-      try await registry.replaceAll(with: surviving)
+    let records = try await database.read { db in
+      try TailscaleBindingRecord
+        .order { ($0.tailnetPort, $0.mountPath) }
+        .fetchAll(db)
     }
+
+    let now = Date()
+    var surviving: [TailscaleBindingRecord] = []
+    var dead: [UUIDV7] = []
+    for record in records {
+      if live.contains(where: record.claims) {
+        surviving.append(record)
+      } else if now.timeIntervalSince(record.createdAt) > claimGracePeriod {
+        dead.append(record.id)
+      }
+    }
+    try await discardClaims(dead)
 
     return live.map { binding in
       var binding = binding
@@ -171,6 +191,47 @@ public actor TailscaleBinder {
       return binding
     }
   }
+
+  // MARK: - Persistence
+
+  private func claim(_ record: TailscaleBindingRecord) async throws {
+    try await database.write { db in
+      try TailscaleBindingRecord
+        .insert {
+          record
+        } onConflict: {
+          ($0.tailnetPort, $0.proto, $0.mountPath)
+        } doUpdate: { updates, excluded in
+          updates.localPort = excluded.localPort
+          updates.createdAt = excluded.createdAt
+        }
+        .execute(db)
+    }
+  }
+
+  private func releaseClaim(
+    tailnetPort: Int,
+    proto: TailscaleServeProtocol,
+    mountPath: String
+  ) async throws {
+    try await database.write { db in
+      try TailscaleBindingRecord
+        .where {
+          $0.tailnetPort.eq(tailnetPort) && $0.proto.eq(proto) && $0.mountPath.eq(mountPath)
+        }
+        .delete()
+        .execute(db)
+    }
+  }
+
+  private func discardClaims(_ ids: [UUIDV7]) async throws {
+    guard !ids.isEmpty else { return }
+    try await database.write { db in
+      try TailscaleBindingRecord.find(ids).delete().execute(db)
+    }
+  }
+
+  // MARK: - Daemon
 
   private func requireRunning() async throws -> TailscaleStatus {
     let status = try await cli.status()

@@ -1,6 +1,7 @@
 import Foundation
-import TailregCore
 import Testing
+
+@testable import TailregCore
 
 @Suite
 struct `Tailscale command failure tests` {
@@ -8,12 +9,12 @@ struct `Tailscale command failure tests` {
     _ runner: StubProcessRunner,
     temp: TempDirectory,
     listening: Set<Int> = [3000]
-  ) -> TailscaleBinder {
+  ) throws -> TailscaleBinder {
     TailscaleBinder(
       binaryPath: "/usr/bin/tailscale",
       runner: runner,
       portProbe: StubPortProbe(listening: listening),
-      registryPath: temp.path("bindings.json")
+      database: try openTailregDatabase(path: temp.path("tailreg.sqlite"), kind: .queue)
     )
   }
 
