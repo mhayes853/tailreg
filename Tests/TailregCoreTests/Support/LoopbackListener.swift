@@ -11,7 +11,12 @@ final class LoopbackListener {
   private let descriptor: Int32
 
   init() throws {
-    let fileDescriptor = socket(AF_INET, Int32(SOCK_STREAM.rawValue), 0)
+    #if canImport(Glibc)
+      let socketType = Int32(SOCK_STREAM.rawValue)
+    #else
+      let socketType = SOCK_STREAM
+    #endif
+    let fileDescriptor = socket(AF_INET, socketType, 0)
     guard fileDescriptor >= 0 else { throw Failure.socket }
 
     var reuse: Int32 = 1
