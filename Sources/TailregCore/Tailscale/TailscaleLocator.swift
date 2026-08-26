@@ -2,15 +2,13 @@ import Foundation
 
 public struct TailscaleLocator: Sendable {
   private let searchPaths: [String]
-  private let fileManager: FileManager
 
   public init(searchPaths: [String] = TailscaleLocator.defaultSearchPaths()) {
     self.searchPaths = searchPaths
-    self.fileManager = .default
   }
 
   public func locate() throws -> String {
-    for candidate in searchPaths where fileManager.isExecutableFile(atPath: candidate) {
+    for candidate in searchPaths where FileManager.default.isExecutableFile(atPath: candidate) {
       return candidate
     }
     throw TailscaleError.notInstalled
