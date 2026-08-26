@@ -1,0 +1,12 @@
+public enum TailscaleError: Error, Sendable, Equatable {
+  case notInstalled
+  case daemonNotRunning(state: String)
+  case operatorPermissionDenied
+  case tailnetPortInUse(port: Int, existingTarget: String)
+  case noLocalServerListening(port: Int)
+  case noAvailableTailnetPort
+  case bindingNotFound
+  case malformedOutput(command: String, detail: String)
+  case registryCorrupt(path: String, detail: String)
+  case commandFailed(argv: [String], exitCode: Int32, standardError: String)
+}
