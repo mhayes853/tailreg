@@ -22,16 +22,22 @@ struct `FileLock tests` {
   }
 
   @Test
-  func `An Exclusive Holder Shuts Out A Second Exclusive Waiter`() async throws {
+  func `Releases The Lock When The Critical Section Throws`() async throws {
+    struct Boom: Error {}
     let temp = try TempDirectory()
     let lock = makeLock(temp)
-    let contender = makeLock(temp)
+    let next = makeLock(temp)
 
-    try await lock.withLock(.exclusive) {
-      await #expect(throws: TailscaleError.self) {
-        try await contender.withLock(.exclusive) {}
-      }
+    var caughtBoom = false
+    do {
+      try await lock.withLock(.exclusive) { throw Boom() }
+    } catch is Boom {
+      caughtBoom = true
     }
+    #expect(caughtBoom)
+
+    let acquired = try await next.withLock(.exclusive) { true }
+    #expect(acquired)
   }
 
   @Test
@@ -72,21 +78,15 @@ struct `FileLock tests` {
   }
 
   @Test
-  func `Releases The Lock When The Critical Section Throws`() async throws {
-    struct Boom: Error {}
+  func `An Exclusive Holder Shuts Out A Second Exclusive Waiter`() async throws {
     let temp = try TempDirectory()
     let lock = makeLock(temp)
-    let next = makeLock(temp)
+    let contender = makeLock(temp)
 
-    var caughtBoom = false
-    do {
-      try await lock.withLock(.exclusive) { throw Boom() }
-    } catch is Boom {
-      caughtBoom = true
+    try await lock.withLock(.exclusive) {
+      await #expect(throws: TailscaleError.self) {
+        try await contender.withLock(.exclusive) {}
+      }
     }
-    #expect(caughtBoom)
-
-    let acquired = try await next.withLock(.exclusive) { true }
-    #expect(acquired)
   }
 }
