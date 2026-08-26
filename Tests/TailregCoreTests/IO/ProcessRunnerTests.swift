@@ -44,9 +44,7 @@ struct `SystemProcessRunner tests` {
   @Test
   func `Collects Both Pipes When Each Exceeds The Buffer`() async throws {
     let script = """
-      { head -c 500000 /dev/zero; } &
-      { head -c 500000 /dev/zero >&2; } &
-      wait
+      awk 'BEGIN { printf "%*s", 500000, ""; printf "%*s", 500000, "" > "/dev/stderr" }'
       """
 
     let result = try await runner.run(executable: "/bin/sh", arguments: ["-c", script])
