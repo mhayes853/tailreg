@@ -35,7 +35,7 @@ struct `SystemProcessRunner tests` {
   func `Collects Output Larger Than The Pipe Buffer`() async throws {
     let result = try await runner.run(
       executable: "/bin/sh",
-      arguments: ["-c", "yes abcdefghijklmnopqrstuvwxyz | head -c 2000000"]
+      arguments: ["-c", "head -c 2000000 /dev/zero"]
     )
 
     #expect(result.standardOutput.count == 2_000_000)
@@ -44,8 +44,8 @@ struct `SystemProcessRunner tests` {
   @Test
   func `Collects Both Pipes When Each Exceeds The Buffer`() async throws {
     let script = """
-      { yes stdout | head -c 500000; } &
-      { yes stderr | head -c 500000 >&2; } &
+      { head -c 500000 /dev/zero; } &
+      { head -c 500000 /dev/zero >&2; } &
       wait
       """
 
