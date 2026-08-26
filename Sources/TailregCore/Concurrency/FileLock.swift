@@ -33,19 +33,22 @@ struct FileLock: Sendable {
     _ operation: () async throws -> T
   ) async throws -> T {
     Self.debugLog("withLock(\(mode)) enter")
-    let token = try await acquire(mode, isolation: isolation)
+    let descriptor = try await acquire(mode, isolation: isolation)
     Self.debugLog("withLock(\(mode)) acquired")
+    defer {
+      flock(descriptor, LOCK_UN)
+      close(descriptor)
+      Self.debugLog("withLock(\(mode)) released")
+    }
     let result = try await operation()
     Self.debugLog("withLock(\(mode)) operation done")
-    _ = consume token
-    Self.debugLog("withLock(\(mode)) token consumed")
     return result
   }
 
   private func acquire(
     _ mode: Mode,
     isolation: isolated (any Actor)?
-  ) async throws -> FileLockToken {
+  ) async throws -> Int32 {
     Self.debugLog("acquire(\(mode)) createLockDirectory")
     try createLockDirectory()
 
@@ -55,19 +58,20 @@ struct FileLock: Sendable {
     guard descriptor >= 0 else {
       throw TailscaleError.lockUnavailable(path: path, detail: Self.errorDescription())
     }
-    let token = FileLockToken(descriptor: descriptor)
 
     var waited = Duration.zero
     while true {
       let rc = flock(descriptor, mode.operation | LOCK_NB)
       Self.debugLog("acquire(\(mode)) flock rc=\(rc) waited=\(waited)")
-      if rc == 0 { return token }
+      if rc == 0 { return descriptor }
 
       let code = errno
       guard code == EWOULDBLOCK || code == EINTR else {
+        close(descriptor)
         throw TailscaleError.lockUnavailable(path: path, detail: Self.errorDescription(code))
       }
       guard waited < timeout else {
+        close(descriptor)
         throw TailscaleError.lockUnavailable(
           path: path,
           detail: "timed out after \(timeout) waiting for another tailreg process"
@@ -94,18 +98,5 @@ struct FileLock: Sendable {
 
   private static func errorDescription(_ code: Int32 = errno) -> String {
     String(cString: strerror(code))
-  }
-}
-
-struct FileLockToken: ~Copyable {
-  private let descriptor: Int32
-
-  fileprivate init(descriptor: Int32) {
-    self.descriptor = descriptor
-  }
-
-  deinit {
-    flock(descriptor, LOCK_UN)
-    close(descriptor)
   }
 }
