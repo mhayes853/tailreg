@@ -5,6 +5,16 @@ import Testing
 
 @Suite
 struct `FileLock tests` {
+  init() {
+    guard ProcessInfo.processInfo.environment["TAILREG_FILELOCK_DEBUG"] != nil else { return }
+    FileHandle.standardError.write(
+      Data(
+        "[FileLockTests pid=\(getpid())] suite init, activeProcessorCount=\(ProcessInfo.processInfo.activeProcessorCount)\n"
+          .utf8
+      )
+    )
+  }
+
   private func makeLock(_ temp: TempDirectory, timeout: Duration = .milliseconds(200)) -> FileLock {
     var lock = FileLock(path: temp.path("tailreg.sqlite.lock"))
     lock.timeout = timeout

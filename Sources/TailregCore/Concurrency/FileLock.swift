@@ -32,9 +32,13 @@ struct FileLock: Sendable {
     isolation: isolated (any Actor)? = #isolation,
     _ operation: () async throws -> T
   ) async throws -> T {
+    Self.debugLog("withLock(\(mode)) enter")
     let token = try await acquire(mode, isolation: isolation)
+    Self.debugLog("withLock(\(mode)) acquired")
     let result = try await operation()
+    Self.debugLog("withLock(\(mode)) operation done")
     _ = consume token
+    Self.debugLog("withLock(\(mode)) token consumed")
     return result
   }
 
@@ -42,9 +46,12 @@ struct FileLock: Sendable {
     _ mode: Mode,
     isolation: isolated (any Actor)?
   ) async throws -> FileLockToken {
+    Self.debugLog("acquire(\(mode)) createLockDirectory")
     try createLockDirectory()
 
+    Self.debugLog("acquire(\(mode)) open")
     let descriptor = open(path, O_CREAT | O_RDWR | O_CLOEXEC, 0o644)
+    Self.debugLog("acquire(\(mode)) opened fd=\(descriptor)")
     guard descriptor >= 0 else {
       throw TailscaleError.lockUnavailable(path: path, detail: Self.errorDescription())
     }
@@ -52,7 +59,9 @@ struct FileLock: Sendable {
 
     var waited = Duration.zero
     while true {
-      if flock(descriptor, mode.operation | LOCK_NB) == 0 { return token }
+      let rc = flock(descriptor, mode.operation | LOCK_NB)
+      Self.debugLog("acquire(\(mode)) flock rc=\(rc) waited=\(waited)")
+      if rc == 0 { return token }
 
       let code = errno
       guard code == EWOULDBLOCK || code == EINTR else {
@@ -65,9 +74,16 @@ struct FileLock: Sendable {
         )
       }
 
+      Self.debugLog("acquire(\(mode)) sleeping \(pollInterval)")
       try await Task.sleep(for: pollInterval)
+      Self.debugLog("acquire(\(mode)) woke")
       waited += pollInterval
     }
+  }
+
+  private static func debugLog(_ message: String) {
+    guard ProcessInfo.processInfo.environment["TAILREG_FILELOCK_DEBUG"] != nil else { return }
+    FileHandle.standardError.write(Data("[FileLock pid=\(getpid())] \(message)\n".utf8))
   }
 
   private func createLockDirectory() throws {

@@ -18,5 +18,11 @@ jobs:
       - uses: swift-actions/setup-swift@v3
         with:
           swift-version: "6.3.3"
+      - name: Print runner diagnostics
+        run: |
+          echo "nproc: $(nproc 2>/dev/null || sysctl -n hw.ncpu)"
+          uname -a
       - name: Run tests
+        env:
+          TAILREG_FILELOCK_DEBUG: "1"
         run: swift test --filter TailregCoreTests
