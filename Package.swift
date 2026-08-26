@@ -25,11 +25,6 @@ let package = Package(
         .package(
             url: "https://github.com/pointfreeco/sqlite-data.git",
             from: "1.11.0"
-        ),
-        .package(
-            url: "https://github.com/mhayes853/swift-uuidv7.git",
-            from: "0.6.1",
-            traits: ["SwiftUUIDV7SQLiteData"]
         )
     ],
     targets: [
@@ -43,8 +38,7 @@ let package = Package(
         .target(
             name: "TailregCore",
             dependencies: [
-                .product(name: "SQLiteData", package: "sqlite-data"),
-                .product(name: "UUIDV7", package: "swift-uuidv7")
+                .product(name: "SQLiteData", package: "sqlite-data")
             ]
         ),
         .testTarget(

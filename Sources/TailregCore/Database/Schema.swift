@@ -1,6 +1,5 @@
 import Foundation
 import SQLiteData
-import UUIDV7
 
 extension TailscaleServeProtocol: QueryBindable, QueryDecodable {}
 

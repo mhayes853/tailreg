@@ -1,7 +1,6 @@
 import Foundation
 import SQLiteData
 import Testing
-import UUIDV7
 
 @testable import TailregCore
 

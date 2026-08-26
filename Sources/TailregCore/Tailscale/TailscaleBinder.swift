@@ -1,6 +1,5 @@
 import Foundation
 import SQLiteData
-import UUIDV7
 
 public actor TailscaleBinder {
   public static let defaultClaimGracePeriod: TimeInterval = 30
