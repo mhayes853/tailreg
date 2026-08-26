@@ -6,8 +6,7 @@ public actor TailscaleBinder {
   private let registry: TailscaleBindingRegistry
   private let now: @Sendable () -> Date
 
-  private var isPerformingOperation = false
-  private var pendingOperations: [CheckedContinuation<Void, Never>] = []
+  private let gate = AsyncGate()
 
   public init(
     cli: TailscaleCLI,
@@ -46,11 +45,11 @@ public actor TailscaleBinder {
   }
 
   public func bindings() async throws -> [TailscaleBinding] {
-    try await withExclusiveAccess { try await self.snapshot() }
+    try await gate.withGate { try await self.snapshot() }
   }
 
   public func managedBindings() async throws -> [TailscaleBinding] {
-    try await withExclusiveAccess { try await self.snapshot().filter(\.isManaged) }
+    try await gate.withGate { try await self.snapshot().filter(\.isManaged) }
   }
 
   // MARK: - Binding
@@ -63,7 +62,7 @@ public actor TailscaleBinder {
     mountPath: String = "/",
     funnel: Bool = false
   ) async throws -> TailscaleBinding {
-    try await withExclusiveAccess {
+    try await gate.withGate {
       try await self.performBind(
         localPort: localPort,
         to: tailnetPort,
@@ -78,21 +77,21 @@ public actor TailscaleBinder {
 
   @discardableResult
   public func unbind(tailnetPort: Int) async throws -> [TailscaleBinding] {
-    try await withExclusiveAccess {
+    try await gate.withGate {
       try await self.performRemove { $0.tailnetPort == tailnetPort }
     }
   }
 
   @discardableResult
   public func unbind(localPort: Int) async throws -> [TailscaleBinding] {
-    try await withExclusiveAccess {
+    try await gate.withGate {
       try await self.performRemove { $0.localPort == localPort }
     }
   }
 
   @discardableResult
   public func unbindAll() async throws -> [TailscaleBinding] {
-    try await withExclusiveAccess {
+    try await gate.withGate {
       try await self.performRemove(\.isManaged)
     }
   }
@@ -221,23 +220,5 @@ public actor TailscaleBinder {
       }
       return free
     }
-  }
-
-  // MARK: - Exclusive access
-
-  private func withExclusiveAccess<T>(
-    _ operation: () async throws -> T
-  ) async rethrows -> T {
-    while isPerformingOperation {
-      await withCheckedContinuation { pendingOperations.append($0) }
-    }
-    isPerformingOperation = true
-    defer {
-      isPerformingOperation = false
-      if !pendingOperations.isEmpty {
-        pendingOperations.removeFirst().resume()
-      }
-    }
-    return try await operation()
   }
 }
