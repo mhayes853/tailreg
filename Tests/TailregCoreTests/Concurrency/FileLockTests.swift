@@ -78,11 +78,15 @@ struct `FileLock tests` {
     let lock = makeLock(temp)
     let next = makeLock(temp)
 
-    await #expect(throws: Boom.self) {
+    var caughtBoom = false
+    do {
       try await lock.withLock(.exclusive) { throw Boom() }
+    } catch is Boom {
+      caughtBoom = true
     }
-    let acquired = try await next.withLock(.exclusive) { true }
+    #expect(caughtBoom)
 
+    let acquired = try await next.withLock(.exclusive) { true }
     #expect(acquired)
   }
 }
