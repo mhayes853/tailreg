@@ -1,4 +1,3 @@
-import Dispatch
 import Foundation
 
 // MARK: - Result
@@ -55,11 +54,6 @@ extension ProcessRunner {
 
 // MARK: - System implementation
 
-private let processIOQueue = DispatchQueue(
-  label: "com.tailreg.io.process",
-  attributes: .concurrent
-)
-
 public struct SystemProcessRunner: ProcessRunner {
   public init() {}
 
@@ -105,9 +99,15 @@ public struct SystemProcessRunner: ProcessRunner {
     )
   }
 
+  // Draining stdout and stderr concurrently requires two blocking reads to make
+  // progress at the same time, or a full pipe buffer on one stream can stall the
+  // child indefinitely while the other stream is being read. A shared, bounded
+  // DispatchQueue can't guarantee that: on a machine with very few cores its
+  // worker pool is small enough to contend with Swift's own concurrency
+  // executor, so give each blocking call its own dedicated OS thread instead.
   private static func readToEnd(_ handle: FileHandle) async -> Data {
-    return await withCheckedContinuation { continuation in
-      processIOQueue.async {
+    await withCheckedContinuation { continuation in
+      Thread.detachNewThread {
         let data = (try? handle.readToEnd()) ?? Data()
         try? handle.close()
         continuation.resume(returning: data)
@@ -117,7 +117,7 @@ public struct SystemProcessRunner: ProcessRunner {
 
   private static func waitForExit(_ process: Process) async -> Int32 {
     await withCheckedContinuation { continuation in
-      processIOQueue.async {
+      Thread.detachNewThread {
         process.waitUntilExit()
         continuation.resume(returning: process.terminationStatus)
       }

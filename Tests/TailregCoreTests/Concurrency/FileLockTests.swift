@@ -3,15 +3,7 @@ import Testing
 
 @testable import TailregCore
 
-// Disabled: this suite reliably hangs the Linux CI runner (2 CPUs) right at
-// the very last test executed in the whole run, regardless of which test
-// that ends up being — confirmed by deliberately reordering these tests and
-// watching the hang follow whichever one moved to last. FileLock.swift is
-// the only place in the codebase using Task.sleep, which is the strongest
-// remaining lead. Never reproduces locally, including under a matching
-// 2-core taskset constraint. Revisit once there's a lead on the underlying
-// Swift Concurrency / swift-testing runtime behavior.
-@Suite(.disabled("Hangs CI on 2-core Linux runners; see suite comment"))
+@Suite
 struct `FileLock tests` {
   private func makeLock(_ temp: TempDirectory, timeout: Duration = .milliseconds(200)) -> FileLock {
     var lock = FileLock(path: temp.path("tailreg.sqlite.lock"))
