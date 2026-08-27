@@ -5,6 +5,7 @@ import UUIDV7
 extension TailscaleServeProtocol: QueryBindable, QueryDecodable {}
 extension TailscaleBindingStatus: QueryBindable, QueryDecodable {}
 extension TailscaleBindingEndReason: QueryBindable, QueryDecodable {}
+extension ProcessStream: QueryBindable, QueryDecodable {}
 
 @Table("bindings")
 public struct TailscaleBindingRecord: Hashable, Sendable {
@@ -53,6 +54,29 @@ public struct TailscaleBindingRecord: Hashable, Sendable {
   }
 }
 
+@Table("logs")
+public struct LogRecord: Hashable, Sendable {
+  public let id: UUIDV7
+  public var bindingID: UUIDV7
+  public var stream: ProcessStream
+  public var message: String
+  public var at: Date
+
+  public init(
+    id: UUIDV7 = UUIDV7(),
+    bindingID: UUIDV7,
+    stream: ProcessStream,
+    message: String,
+    at: Date
+  ) {
+    self.id = id
+    self.bindingID = bindingID
+    self.stream = stream
+    self.message = message
+    self.at = at
+  }
+}
+
 public func tailregDatabaseConfiguration() -> Configuration {
   var configuration = Configuration()
   configuration.busyMode = .timeout(5)
@@ -66,7 +90,7 @@ public func tailregDatabaseConfiguration() -> Configuration {
 public func tailregDatabaseMigrator() -> DatabaseMigrator {
   var migrator = DatabaseMigrator()
 
-  migrator.registerMigration("v1: create bindings") { db in
+  migrator.registerMigration("v1: create bindings and logs") { db in
     try #sql(
       """
       CREATE TABLE "bindings" (
@@ -106,6 +130,28 @@ public func tailregDatabaseMigrator() -> DatabaseMigrator {
     try #sql(
       """
       CREATE INDEX "bindings_created_at" ON "bindings" ("createdAt" DESC)
+      """
+    )
+    .execute(db)
+
+    try #sql(
+      """
+      CREATE TABLE "logs" (
+        "id"        TEXT NOT NULL PRIMARY KEY,
+        "bindingID" TEXT NOT NULL REFERENCES "bindings"("id") ON DELETE CASCADE,
+        "stream"    TEXT NOT NULL,
+        "message"   TEXT NOT NULL,
+        "at"        TEXT NOT NULL,
+
+        CHECK ("stream" IN ('stdout', 'stderr'))
+      ) STRICT
+      """
+    )
+    .execute(db)
+
+    try #sql(
+      """
+      CREATE INDEX "logs_binding" ON "logs" ("bindingID", "id")
       """
     )
     .execute(db)
