@@ -30,6 +30,14 @@ let package = Package(
             url: "https://github.com/mhayes853/swift-uuidv7.git",
             from: "0.6.2",
             traits: ["SwiftUUIDV7SQLiteData"]
+        ),
+        .package(
+            url: "https://github.com/apple/swift-async-algorithms.git",
+            from: "1.1.5"
+        ),
+        .package(
+            url: "https://github.com/pointfreeco/swift-clocks",
+            from: "1.1.0"
         )
     ],
     targets: [
@@ -43,13 +51,17 @@ let package = Package(
         .target(
             name: "TailregCore",
             dependencies: [
+                .product(name: "AsyncAlgorithms", package: "swift-async-algorithms"),
                 .product(name: "SQLiteData", package: "sqlite-data"),
                 .product(name: "UUIDV7", package: "swift-uuidv7")
             ]
         ),
         .testTarget(
             name: "TailregCoreTests",
-            dependencies: ["TailregCore"]
+            dependencies: [
+                "TailregCore",
+                .product(name: "Clocks", package: "swift-clocks")
+            ]
         )
     ]
 )
