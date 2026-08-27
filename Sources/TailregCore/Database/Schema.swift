@@ -3,31 +3,47 @@ import SQLiteData
 import UUIDV7
 
 extension TailscaleServeProtocol: QueryBindable, QueryDecodable {}
+extension TailscaleBindingStatus: QueryBindable, QueryDecodable {}
+extension TailscaleBindingEndReason: QueryBindable, QueryDecodable {}
 
 @Table("bindings")
-struct TailscaleBindingRecord: Hashable, Sendable {
-  let id: UUIDV7
-  var localPort: Int
-  var tailnetPort: Int
-  var proto: TailscaleServeProtocol
-  var mountPath: String
-  var createdAt: Date
+public struct TailscaleBindingRecord: Hashable, Sendable {
+  public let id: UUIDV7
+  public var hostname: String
+  public var localPort: Int
+  public var tailnetPort: Int
+  public var proto: TailscaleServeProtocol
+  public var mountPath: String
+  public var status: TailscaleBindingStatus
+  public var createdAt: Date
+  public var endedAt: Date?
+  public var endReason: TailscaleBindingEndReason?
 
-  init(
+  public init(
     id: UUIDV7 = UUIDV7(),
+    hostname: String,
     localPort: Int,
     tailnetPort: Int,
     proto: TailscaleServeProtocol,
     mountPath: String,
-    createdAt: Date
+    status: TailscaleBindingStatus = .pending,
+    createdAt: Date,
+    endedAt: Date? = nil,
+    endReason: TailscaleBindingEndReason? = nil
   ) {
     self.id = id
+    self.hostname = hostname
     self.localPort = localPort
     self.tailnetPort = tailnetPort
     self.proto = proto
     self.mountPath = mountPath
+    self.status = status
     self.createdAt = createdAt
+    self.endedAt = endedAt
+    self.endReason = endReason
   }
+
+  public var isLive: Bool { endedAt == nil }
 
   func claims(_ binding: TailscaleBinding) -> Bool {
     binding.tailnetPort == tailnetPort
@@ -55,19 +71,41 @@ public func tailregDatabaseMigrator() -> DatabaseMigrator {
       """
       CREATE TABLE "bindings" (
         "id"          TEXT    NOT NULL PRIMARY KEY,
+        "hostname"    TEXT    NOT NULL,
         "localPort"   INTEGER NOT NULL,
         "tailnetPort" INTEGER NOT NULL,
         "proto"       TEXT    NOT NULL,
         "mountPath"   TEXT    NOT NULL,
+        "status"      TEXT    NOT NULL,
         "createdAt"   TEXT    NOT NULL,
-
-        UNIQUE ("tailnetPort", "proto", "mountPath"),
+        "endedAt"     TEXT,
+        "endReason"   TEXT,
 
         CHECK ("tailnetPort" BETWEEN 1 AND 65535),
         CHECK ("localPort"   BETWEEN 1 AND 65535),
-        CHECK ("proto" IN ('https', 'http', 'tcp', 'tls-terminated-tcp')),
-        CHECK ("mountPath" LIKE '/%')
+        CHECK ("proto"  IN ('https', 'http', 'tcp', 'tls-terminated-tcp')),
+        CHECK ("status" IN ('pending', 'active', 'ended')),
+        CHECK ("mountPath" LIKE '/%'),
+        CHECK ("endReason" IS NULL OR "endReason" IN ('unbound', 'expired', 'failed')),
+        CHECK (("endedAt" IS NULL) = ("endReason" IS NULL)),
+        CHECK (("status" = 'ended') = ("endedAt" IS NOT NULL))
       ) STRICT
+      """
+    )
+    .execute(db)
+
+    try #sql(
+      """
+      CREATE UNIQUE INDEX "bindings_live_target"
+        ON "bindings" ("tailnetPort", "proto", "mountPath")
+        WHERE "endedAt" IS NULL
+      """
+    )
+    .execute(db)
+
+    try #sql(
+      """
+      CREATE INDEX "bindings_created_at" ON "bindings" ("createdAt" DESC)
       """
     )
     .execute(db)

@@ -50,6 +50,15 @@ public actor TailscaleBinder {
     }
   }
 
+  public func history(limit: Int = 100) async throws -> [TailscaleBindingRecord] {
+    try await database.read { db in
+      try TailscaleBindingRecord
+        .order { ($0.createdAt.desc(), $0.id.desc()) }
+        .limit(limit)
+        .fetchAll(db)
+    }
+  }
+
   // MARK: - Binding
 
   @discardableResult
@@ -108,16 +117,25 @@ public actor TailscaleBinder {
     }
 
     let live = try await cli.serveStatus(hostname: status.dnsName)
-    let resolvedPort = try resolveTailnetPort(tailnetPort, mountPath: mountPath, live: live)
+    let claimed = try await reconcile(against: live, now: Date())
+    let resolvedPort = try resolveTailnetPort(
+      tailnetPort,
+      mountPath: mountPath,
+      live: live,
+      claimed: claimed
+    )
+
     let record = TailscaleBindingRecord(
+      hostname: status.dnsName,
       localPort: localPort,
       tailnetPort: resolvedPort,
       proto: .https,
       mountPath: mountPath,
+      status: .pending,
       createdAt: Date()
     )
+    try await open(record)
 
-    try await claim(record)
     do {
       try await cli.serve(
         localPort: localPort,
@@ -125,11 +143,7 @@ public actor TailscaleBinder {
         mountPath: mountPath
       )
     } catch {
-      try? await releaseClaim(
-        tailnetPort: resolvedPort,
-        proto: .https,
-        mountPath: mountPath
-      )
+      try? await close([record.id], reason: .failed, at: Date())
       throw error
     }
 
@@ -139,9 +153,12 @@ public actor TailscaleBinder {
         $0.tailnetPort == resolvedPort && $0.mountPath == mountPath
       })
     else {
+      try? await close([record.id], reason: .failed, at: Date())
       throw TailscaleError.bindingNotFound
     }
-    binding.isManaged = true
+
+    try await activate([record.id])
+    binding.recordID = record.id
     return binding
   }
 
@@ -155,11 +172,9 @@ public actor TailscaleBinder {
         proto: binding.proto,
         mountPath: binding.mountPath
       )
-      try await releaseClaim(
-        tailnetPort: binding.tailnetPort,
-        proto: binding.proto,
-        mountPath: binding.mountPath
-      )
+      if let id = binding.recordID {
+        try await close([id], reason: .unbound, at: Date())
+      }
     }
     return targets
   }
@@ -167,67 +182,81 @@ public actor TailscaleBinder {
   private func snapshot() async throws -> [TailscaleBinding] {
     let status = try await requireRunning()
     let live = try await cli.serveStatus(hostname: status.dnsName)
-    let records = try await database.read { db in
-      try TailscaleBindingRecord
-        .order { ($0.tailnetPort, $0.mountPath) }
-        .fetchAll(db)
-    }
-
-    let now = Date()
-    var surviving: [TailscaleBindingRecord] = []
-    var dead: [UUIDV7] = []
-    for record in records {
-      if live.contains(where: record.claims) {
-        surviving.append(record)
-      } else if now.timeIntervalSince(record.createdAt) > claimGracePeriod {
-        dead.append(record.id)
-      }
-    }
-    try await discardClaims(dead)
+    let claimed = try await reconcile(against: live, now: Date())
 
     return live.map { binding in
       var binding = binding
-      binding.isManaged = surviving.contains { $0.claims(binding) }
+      binding.recordID = claimed.first { $0.claims(binding) }?.id
       return binding
     }
   }
 
+  private func reconcile(
+    against live: [TailscaleBinding],
+    now: Date
+  ) async throws -> [TailscaleBindingRecord] {
+    let records = try await database.read { db in
+      try TailscaleBindingRecord
+        .where { $0.endedAt.is(nil) }
+        .order { ($0.tailnetPort, $0.mountPath) }
+        .fetchAll(db)
+    }
+
+    var surviving: [TailscaleBindingRecord] = []
+    var confirmed: [UUIDV7] = []
+    var expired: [UUIDV7] = []
+
+    for record in records {
+      if live.contains(where: record.claims) {
+        surviving.append(record)
+        if record.status == .pending {
+          confirmed.append(record.id)
+        }
+      } else if now.timeIntervalSince(record.createdAt) > claimGracePeriod {
+        expired.append(record.id)
+      } else {
+        surviving.append(record)
+      }
+    }
+
+    try await activate(confirmed)
+    try await close(expired, reason: .expired, at: now)
+    return surviving
+  }
+
   // MARK: - Persistence
 
-  private func claim(_ record: TailscaleBindingRecord) async throws {
+  private func open(_ record: TailscaleBindingRecord) async throws {
     try await database.write { db in
-      try TailscaleBindingRecord
-        .insert {
-          record
-        } onConflict: {
-          ($0.tailnetPort, $0.proto, $0.mountPath)
-        } doUpdate: { updates, excluded in
-          updates.localPort = excluded.localPort
-          updates.createdAt = excluded.createdAt
-        }
-        .execute(db)
+      try TailscaleBindingRecord.insert { record }.execute(db)
     }
   }
 
-  private func releaseClaim(
-    tailnetPort: Int,
-    proto: TailscaleServeProtocol,
-    mountPath: String
-  ) async throws {
-    try await database.write { db in
-      try TailscaleBindingRecord
-        .where {
-          $0.tailnetPort.eq(tailnetPort) && $0.proto.eq(proto) && $0.mountPath.eq(mountPath)
-        }
-        .delete()
-        .execute(db)
-    }
-  }
-
-  private func discardClaims(_ ids: [UUIDV7]) async throws {
+  private func activate(_ ids: [UUIDV7]) async throws {
     guard !ids.isEmpty else { return }
     try await database.write { db in
-      try TailscaleBindingRecord.find(ids).delete().execute(db)
+      try TailscaleBindingRecord
+        .where { $0.id.in(ids) && $0.endedAt.is(nil) }
+        .update { $0.status = #bind(TailscaleBindingStatus.active) }
+        .execute(db)
+    }
+  }
+
+  private func close(
+    _ ids: [UUIDV7],
+    reason: TailscaleBindingEndReason,
+    at date: Date
+  ) async throws {
+    guard !ids.isEmpty else { return }
+    try await database.write { db in
+      try TailscaleBindingRecord
+        .where { $0.id.in(ids) && $0.endedAt.is(nil) }
+        .update {
+          $0.status = #bind(TailscaleBindingStatus.ended)
+          $0.endedAt = #bind(date)
+          $0.endReason = #bind(reason)
+        }
+        .execute(db)
     }
   }
 
@@ -244,7 +273,8 @@ public actor TailscaleBinder {
   private func resolveTailnetPort(
     _ requested: TailscaleTailnetPort,
     mountPath: String,
-    live: [TailscaleBinding]
+    live: [TailscaleBinding],
+    claimed: [TailscaleBindingRecord]
   ) throws -> Int {
     switch requested {
     case .explicit(let port):
@@ -254,10 +284,16 @@ public actor TailscaleBinder {
           existingTarget: String(describing: clash.target)
         )
       }
+      if let clash = claimed.first(where: { $0.tailnetPort == port && $0.mountPath == mountPath }) {
+        throw TailscaleError.tailnetPortInUse(
+          port: port,
+          existingTarget: String(describing: TailscaleServeTarget.localPort(clash.localPort))
+        )
+      }
       return port
 
     case .auto:
-      let occupied = Set(live.map(\.tailnetPort))
+      let occupied = Set(live.map(\.tailnetPort)).union(claimed.map(\.tailnetPort))
       guard
         let free = TailscaleTailnetPort.autoAllocationPool.first(where: { !occupied.contains($0) })
       else {

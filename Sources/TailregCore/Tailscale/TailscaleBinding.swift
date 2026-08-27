@@ -1,10 +1,23 @@
 import Foundation
+import UUIDV7
 
 public enum TailscaleServeTarget: Sendable, Equatable {
   case localPort(Int)
   case proxy(String)
   case path(String)
   case text(String)
+}
+
+public enum TailscaleBindingStatus: String, Sendable, Codable, CaseIterable, Equatable {
+  case pending
+  case active
+  case ended
+}
+
+public enum TailscaleBindingEndReason: String, Sendable, Codable, CaseIterable, Equatable {
+  case unbound
+  case expired
+  case failed
 }
 
 public struct TailscaleBinding: Sendable, Equatable {
@@ -14,7 +27,7 @@ public struct TailscaleBinding: Sendable, Equatable {
   public let mountPath: String
   public let target: TailscaleServeTarget
   public let funnel: Bool
-  public var isManaged: Bool
+  public var recordID: UUIDV7?
 
   public init(
     hostname: String,
@@ -23,7 +36,7 @@ public struct TailscaleBinding: Sendable, Equatable {
     mountPath: String,
     target: TailscaleServeTarget,
     funnel: Bool,
-    isManaged: Bool = false
+    recordID: UUIDV7? = nil
   ) {
     self.hostname = hostname
     self.tailnetPort = tailnetPort
@@ -31,8 +44,10 @@ public struct TailscaleBinding: Sendable, Equatable {
     self.mountPath = mountPath
     self.target = target
     self.funnel = funnel
-    self.isManaged = isManaged
+    self.recordID = recordID
   }
+
+  public var isManaged: Bool { recordID != nil }
 
   public var localPort: Int? {
     guard case .localPort(let port) = target else { return nil }

@@ -339,4 +339,135 @@ struct `TailscaleBinder tests` {
     #expect(try await harness.binder.unbind(localPort: 9999).isEmpty)
     #expect(harness.daemon.argv(startingWith: ["serve", "--https"]).isEmpty)
   }
+
+  // MARK: - History
+
+  @Test
+  func `Records A Live Binding In The History`() async throws {
+    let harness = try makeHarness(listening: [3000])
+    let binding = try await harness.binder.bind(localPort: 3000)
+
+    let history = try await harness.binder.history()
+
+    #expect(history.count == 1)
+    #expect(history[0].id == binding.recordID)
+    #expect(history[0].status == .active)
+    #expect(history[0].hostname == "node.example.ts.net")
+    #expect(history[0].localPort == 3000)
+    #expect(history[0].tailnetPort == 443)
+    #expect(history[0].isLive)
+  }
+
+  @Test
+  func `Keeps An Unbound Binding On File`() async throws {
+    let harness = try makeHarness(listening: [3000])
+    try await harness.binder.bind(localPort: 3000)
+
+    try await harness.binder.unbind(localPort: 3000)
+
+    let history = try await harness.binder.history()
+    #expect(history.count == 1)
+    #expect(history[0].status == .ended)
+    #expect(history[0].endReason == .unbound)
+    #expect(history[0].isLive == false)
+  }
+
+  @Test
+  func `Keeps A Bind That Serve Rejected On File As Failed`() async throws {
+    let harness = try makeHarness(
+      listening: [3000],
+      serveFailure: (stderr: "something unexpected", exitCode: 1)
+    )
+
+    await #expect(throws: TailscaleError.self) {
+      try await harness.binder.bind(localPort: 3000)
+    }
+
+    let history = try await harness.binder.history()
+    #expect(history.count == 1)
+    #expect(history[0].status == .ended)
+    #expect(history[0].endReason == .failed)
+  }
+
+  @Test
+  func `Records A Handler That Vanished As Expired`() async throws {
+    let harness = try makeHarness(listening: [3000])
+    try await harness.binder.bind(localPort: 3000)
+
+    harness.daemon.removeAllHandlersExternally()
+    _ = try await harness.binder.bindings()
+
+    let history = try await harness.binder.history()
+    #expect(history.count == 1)
+    #expect(history[0].status == .ended)
+    #expect(history[0].endReason == .expired)
+  }
+
+  @Test
+  func `Binding The Same Handler Again Appends To The History`() async throws {
+    let harness = try makeHarness(listening: [3000, 4000])
+    try await harness.binder.bind(localPort: 3000, to: .explicit(443))
+    try await harness.binder.unbind(localPort: 3000)
+    try await harness.binder.bind(localPort: 4000, to: .explicit(443))
+
+    let history = try await harness.binder.history()
+
+    #expect(history.count == 2)
+    #expect(history.map(\.localPort) == [4000, 3000])
+    #expect(history.map(\.isLive) == [true, false])
+  }
+
+  @Test
+  func `Survives The History Across Binder Instances`() async throws {
+    let harness = try makeHarness(listening: [3000])
+    try await harness.binder.bind(localPort: 3000)
+
+    let history = try await reopened(harness).history()
+
+    #expect(history.count == 1)
+    #expect(history[0].localPort == 3000)
+  }
+
+  @Test
+  func `Reports The Binding Identifier Only For Handlers Tailreg Created`() async throws {
+    let harness = try makeHarness(
+      handlers: [.init(tailnetPort: 10000, localPort: 3773)],
+      listening: [3000]
+    )
+    let bound = try await harness.binder.bind(localPort: 3000, to: .explicit(443))
+
+    let bindings = try await harness.binder.bindings()
+
+    #expect(bindings.first { $0.tailnetPort == 443 }?.recordID == bound.recordID)
+    #expect(bindings.first { $0.tailnetPort == 10000 }?.recordID == nil)
+    #expect(bindings.first { $0.tailnetPort == 10000 }?.isManaged == false)
+  }
+
+  @Test
+  func `Will Not Auto Allocate A Port A Claim Still Holds Inside The Grace Period`() async throws {
+    let harness = try makeHarness(
+      listening: [3000, 4000],
+      claimGracePeriod: TailscaleBinder.defaultClaimGracePeriod
+    )
+    try await harness.binder.bind(localPort: 3000)
+    harness.daemon.removeAllHandlersExternally()
+
+    #expect(try await harness.binder.bind(localPort: 4000).tailnetPort == 8443)
+  }
+
+  @Test
+  func `Rejects An Explicit Port A Claim Still Holds Inside The Grace Period`() async throws {
+    let harness = try makeHarness(
+      listening: [3000, 4000],
+      claimGracePeriod: TailscaleBinder.defaultClaimGracePeriod
+    )
+    try await harness.binder.bind(localPort: 3000, to: .explicit(443))
+    harness.daemon.removeAllHandlersExternally()
+
+    await #expect(
+      throws: TailscaleError.tailnetPortInUse(port: 443, existingTarget: "localPort(3000)")
+    ) {
+      try await harness.binder.bind(localPort: 4000, to: .explicit(443))
+    }
+  }
 }
