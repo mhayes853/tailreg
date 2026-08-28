@@ -110,12 +110,12 @@ struct `Process output reading tests` {
     let handle = pipe.fileHandleForReading
     let output = lines(handle)
 
-    #expect(handle.fileDescriptor >= 0)
-
     try pipe.fileHandleForWriting.close()
     _ = try await collect(output)
 
-    #expect(handle.fileDescriptor == -1)
+    #expect(throws: (any Error).self) {
+      try handle.read(upToCount: 1)
+    }
   }
 
   @Test

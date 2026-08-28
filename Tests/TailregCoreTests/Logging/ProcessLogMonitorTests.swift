@@ -221,8 +221,12 @@ struct `Process log monitor tests` {
     try err.fileHandleForWriting.close()
     try await task.value
 
-    #expect(outHandle.fileDescriptor == -1)
-    #expect(errHandle.fileDescriptor == -1)
+    #expect(throws: (any Error).self) {
+      try outHandle.read(upToCount: 1)
+    }
+    #expect(throws: (any Error).self) {
+      try errHandle.read(upToCount: 1)
+    }
   }
 
   @Test
