@@ -8,11 +8,11 @@ import Testing
 struct `Process output reading tests` {
   private static let stamp = Date(timeIntervalSince1970: 1_700_000_000)
 
-  private func collect(
-    _ output: some AsyncSequence<LogLine, Never> & Sendable
-  ) async -> [LogLine] {
+  private func collect<Output: AsyncSequence & Sendable>(
+    _ output: Output
+  ) async throws -> [LogLine] where Output.Element == LogLine {
     var collected: [LogLine] = []
-    for await line in output {
+    for try await line in output {
       collected.append(line)
     }
     return collected
@@ -33,7 +33,7 @@ struct `Process output reading tests` {
     try pipe.fileHandleForWriting.write(contentsOf: Data("one\ntwo\nthree\n".utf8))
     try pipe.fileHandleForWriting.close()
 
-    #expect(await collect(output).map(\.message) == ["one", "two", "three"])
+    #expect(try await collect(output).map(\.message) == ["one", "two", "three"])
   }
 
   @Test
@@ -44,7 +44,7 @@ struct `Process output reading tests` {
     try pipe.fileHandleForWriting.write(contentsOf: Data("boom\n".utf8))
     try pipe.fileHandleForWriting.close()
 
-    #expect(await collect(output).map(\.stream) == [.standardError])
+    #expect(try await collect(output).map(\.stream) == [.standardError])
   }
 
   @Test
@@ -55,7 +55,7 @@ struct `Process output reading tests` {
     try pipe.fileHandleForWriting.write(contentsOf: Data("first\nno-newline-tail".utf8))
     try pipe.fileHandleForWriting.close()
 
-    #expect(await collect(output).map(\.message) == ["first", "no-newline-tail"])
+    #expect(try await collect(output).map(\.message) == ["first", "no-newline-tail"])
   }
 
   @Test
@@ -66,7 +66,7 @@ struct `Process output reading tests` {
     try pipe.fileHandleForWriting.write(contentsOf: Data("now\n".utf8))
     try pipe.fileHandleForWriting.close()
 
-    #expect(await collect(output).map(\.at) == [Self.stamp])
+    #expect(try await collect(output).map(\.at) == [Self.stamp])
   }
 
   @Test
@@ -80,7 +80,7 @@ struct `Process output reading tests` {
       }
       try pipe.fileHandleForWriting.close()
     }
-    let collected = await collect(output)
+    let collected = try await collect(output)
     try await writer.value
 
     #expect(collected.map(\.message) == ["partial", "done"])
@@ -98,7 +98,7 @@ struct `Process output reading tests` {
       )
       try pipe.fileHandleForWriting.close()
     }
-    let collected = await collect(output)
+    let collected = try await collect(output)
     try await writer.value
 
     #expect(collected.map(\.message) == expected)
@@ -113,7 +113,7 @@ struct `Process output reading tests` {
     #expect(handle.fileDescriptor >= 0)
 
     try pipe.fileHandleForWriting.close()
-    _ = await collect(output)
+    _ = try await collect(output)
 
     #expect(handle.fileDescriptor == -1)
   }
@@ -132,7 +132,7 @@ struct `Process output reading tests` {
     try out.fileHandleForWriting.close()
     try err.fileHandleForWriting.close()
 
-    let collected = await collect(output)
+    let collected = try await collect(output)
     #expect(collected.count == 2)
     #expect(
       Set(collected.map { [$0.stream.rawValue, $0.message] })
@@ -147,6 +147,6 @@ struct `Process output reading tests` {
 
     try pipe.fileHandleForWriting.close()
 
-    #expect(await collect(output).isEmpty)
+    #expect(try await collect(output).isEmpty)
   }
 }

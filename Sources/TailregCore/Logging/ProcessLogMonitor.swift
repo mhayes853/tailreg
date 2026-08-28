@@ -21,16 +21,16 @@ public struct ProcessLogMonitor<C: Clock>: Sendable where C.Instant.Duration == 
     self.clock = clock
   }
 
-  public func monitor(
-    _ output: some AsyncSequence<LogLine, Never> & Sendable,
+  public func monitor<Output: AsyncSequence & Sendable>(
+    _ output: Output,
     for bindingID: UUIDV7,
     onBatch: (@Sendable ([LogLine]) -> Void)? = nil
-  ) async throws {
+  ) async throws where Output.Element == LogLine {
     let batches = output.chunks(
       ofCount: batchSize,
       or: AsyncTimerSequence(interval: flushInterval, clock: clock)
     )
-    for await batch in batches {
+    for try await batch in batches {
       try await database.write { db in
         try LogRecord.append(batch, for: bindingID, in: db)
       }
