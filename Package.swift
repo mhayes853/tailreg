@@ -27,6 +27,10 @@ let package = Package(
             from: "2.25.0"
         ),
         .package(
+            url: "https://github.com/swift-server/async-http-client.git",
+            from: "1.30.0"
+        ),
+        .package(
             url: "https://github.com/pointfreeco/sqlite-data.git",
             from: "1.11.0"
         ),
@@ -64,6 +68,14 @@ let package = Package(
             name: "TailregMultiplexer",
             dependencies: [
                 "TailregCore",
+                .product(name: "AsyncHTTPClient", package: "async-http-client"),
+                .product(name: "Hummingbird", package: "hummingbird")
+            ]
+        ),
+        .executableTarget(
+            name: "TailregMultiplexerE2EFixture",
+            dependencies: [
+                "TailregMultiplexer",
                 .product(name: "Hummingbird", package: "hummingbird")
             ]
         ),
@@ -77,6 +89,7 @@ let package = Package(
         .testTarget(
             name: "TailregMultiplexerTests",
             dependencies: [
+                "TailregCore",
                 "TailregMultiplexer",
                 .product(name: "HummingbirdTesting", package: "hummingbird")
             ]

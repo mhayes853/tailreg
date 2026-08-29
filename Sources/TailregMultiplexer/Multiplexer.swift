@@ -8,21 +8,51 @@ public struct MultiplexerStatus: ResponseCodable, Equatable, Sendable {
   }
 }
 
+public struct MultiplexerErrorResponse: ResponseCodable, Equatable, Sendable {
+  public let error: String
+  public let message: String?
+
+  public init(error: String, message: String? = nil) {
+    self.error = error
+    self.message = message
+  }
+}
+
 public struct Multiplexer: Sendable {
   public struct Configuration: Equatable, Sendable {
     public var adminHost: String
     public var adminPort: Int
+    public var ingressHost: String
+    public var ingressPort: Int
+    public var routingCookieName: String
+    public var secureCookies: Bool
 
-    public init(adminHost: String = "127.0.0.1", adminPort: Int = 9100) {
+    public init(
+      adminHost: String = "127.0.0.1",
+      adminPort: Int = 9100,
+      ingressHost: String = "127.0.0.1",
+      ingressPort: Int = 9000,
+      routingCookieName: String = "__Host-tailreg-route",
+      secureCookies: Bool = true
+    ) {
       self.adminHost = adminHost
       self.adminPort = adminPort
+      self.ingressHost = ingressHost
+      self.ingressPort = ingressPort
+      self.routingCookieName = routingCookieName
+      self.secureCookies = secureCookies
     }
   }
 
   public let configuration: Configuration
+  public let registry: BindingRegistry
 
-  public init(configuration: Configuration = .init()) {
+  public init(
+    configuration: Configuration = Configuration(),
+    registry: BindingRegistry = BindingRegistry()
+  ) {
     self.configuration = configuration
+    self.registry = registry
   }
 
   public func buildApplication() -> Application<RouterResponder<BasicRequestContext>> {
@@ -33,9 +63,23 @@ public struct Multiplexer: Sendable {
 
     return Application(
       router: router,
-      configuration: .init(
+      configuration: ApplicationConfiguration(
         address: .hostname(configuration.adminHost, port: configuration.adminPort),
         serverName: "tailreg-mux"
+      )
+    )
+  }
+
+  public func buildIngressApplication() -> Application<MuxIngressResponder> {
+    Application(
+      responder: MuxIngressResponder(
+        registry: registry,
+        cookieName: configuration.routingCookieName,
+        secureCookies: configuration.secureCookies
+      ),
+      configuration: ApplicationConfiguration(
+        address: .hostname(configuration.ingressHost, port: configuration.ingressPort),
+        serverName: "tailreg-mux-ingress"
       )
     )
   }

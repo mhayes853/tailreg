@@ -23,4 +23,20 @@ jobs:
           echo "nproc: $(nproc 2>/dev/null || sysctl -n hw.ncpu)"
           uname -a
       - name: Run tests
-        run: swift test --filter TailregCoreTests
+        run: swift test
+
+  browser-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: swift-actions/setup-swift@v3
+        with:
+          swift-version: "6.3.3"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e

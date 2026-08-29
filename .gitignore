@@ -7,6 +7,9 @@ timeline.xctimeline
 playground.xcworkspace
 .swift-version
 .build/
+node_modules/
+playwright-report/
+test-results/
 Carthage/Build/
 fastlane/report.xml
 fastlane/Preview.html
