@@ -15,6 +15,10 @@ let package = Package(
         .library(
             name: "TailregCore",
             targets: ["TailregCore"]
+        ),
+        .library(
+            name: "TailregMultiplexer",
+            targets: ["TailregMultiplexer"]
         )
     ],
     dependencies: [
@@ -56,11 +60,25 @@ let package = Package(
                 .product(name: "UUIDV7", package: "swift-uuidv7")
             ]
         ),
+        .target(
+            name: "TailregMultiplexer",
+            dependencies: [
+                "TailregCore",
+                .product(name: "Hummingbird", package: "hummingbird")
+            ]
+        ),
         .testTarget(
             name: "TailregCoreTests",
             dependencies: [
                 "TailregCore",
                 .product(name: "Clocks", package: "swift-clocks")
+            ]
+        ),
+        .testTarget(
+            name: "TailregMultiplexerTests",
+            dependencies: [
+                "TailregMultiplexer",
+                .product(name: "HummingbirdTesting", package: "hummingbird")
             ]
         )
     ]
