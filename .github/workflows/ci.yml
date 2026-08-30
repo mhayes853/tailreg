@@ -37,6 +37,14 @@ jobs:
         with:
           node-version: "22"
           cache: npm
+      - uses: actions/cache@v4
+        with:
+          path: .build
+          key: ${{ runner.os }}-spm-${{ hashFiles('Package.resolved') }}
+          restore-keys: |
+            ${{ runner.os }}-spm-
       - run: npm ci
       - run: npx playwright install --with-deps chromium
+      - name: Pre-build multiplexer fixture
+        run: swift build --product TailregMultiplexerE2EFixture
       - run: npm run test:e2e
