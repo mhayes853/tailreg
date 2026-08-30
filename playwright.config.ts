@@ -15,11 +15,36 @@ export default defineConfig({
       use: { ...devices["Desktop Chrome"] },
     },
   ],
-  webServer: {
-    command:
-      "swift build --product TailregMultiplexerE2EFixture && exec .build/debug/TailregMultiplexerE2EFixture",
-    url: "http://127.0.0.1:19100/_tailreg/status",
-    reuseExistingServer: false,
-    timeout: 120_000,
-  },
+  webServer: [
+    {
+      command:
+        "npm run build --workspace tailreg-e2e-nextjs && exec node node_modules/next/dist/bin/next start Tests/Fixtures/NextJS --hostname 127.0.0.1 --port 19104",
+      url: "http://127.0.0.1:19104/",
+      reuseExistingServer: false,
+      timeout: 120_000,
+    },
+    {
+      command:
+        "npm run build --workspace tailreg-e2e-nuxt && exec node Tests/Fixtures/Nuxt/.output/server/index.mjs",
+      url: "http://127.0.0.1:19105/",
+      reuseExistingServer: false,
+      timeout: 120_000,
+      env: { PORT: "19105", HOST: "127.0.0.1" },
+    },
+    {
+      command:
+        "npm run build --workspace tailreg-e2e-sveltekit && exec node Tests/Fixtures/SvelteKit/build",
+      url: "http://127.0.0.1:19103/",
+      reuseExistingServer: false,
+      timeout: 120_000,
+      env: { PORT: "19103", HOST: "127.0.0.1" },
+    },
+    {
+      command:
+        "swift build --product TailregMultiplexerE2EFixture && exec .build/debug/TailregMultiplexerE2EFixture",
+      url: "http://127.0.0.1:19100/_tailreg/status",
+      reuseExistingServer: false,
+      timeout: 120_000,
+    },
+  ],
 });

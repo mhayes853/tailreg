@@ -1,6 +1,11 @@
 {
   "name": "tailreg-browser-tests",
   "private": true,
+  "workspaces": [
+    "Tests/Fixtures/NextJS",
+    "Tests/Fixtures/Nuxt",
+    "Tests/Fixtures/SvelteKit"
+  ],
   "scripts": {
     "test:e2e": "playwright test"
   },

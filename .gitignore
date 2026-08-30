@@ -10,6 +10,11 @@ playground.xcworkspace
 node_modules/
 playwright-report/
 test-results/
+.svelte-kit/
+Tests/Fixtures/SvelteKit/build/
+Tests/Fixtures/NextJS/.next/
+Tests/Fixtures/Nuxt/.nuxt/
+Tests/Fixtures/Nuxt/.output/
 Carthage/Build/
 fastlane/report.xml
 fastlane/Preview.html

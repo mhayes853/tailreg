@@ -12,6 +12,9 @@ enum TailregMultiplexerE2EFixture {
   static func main() async throws {
     let firstUpstreamPort = 19_101
     let secondUpstreamPort = 19_102
+    let svelteKitUpstreamPort = 19_103
+    let nextJSUpstreamPort = 19_104
+    let nuxtUpstreamPort = 19_105
     let ingressPort = 19_100
     let secureCookies = ProcessInfo.processInfo.environment["TAILREG_E2E_SECURE_COOKIES"] == "1"
     let routingCookieName = secureCookies ? "__Host-tailreg-route" : "tailreg-route"
@@ -34,8 +37,23 @@ enum TailregMultiplexerE2EFixture {
       name: "web",
       upstream: URL(string: "http://127.0.0.1:\(secondUpstreamPort)")!
     )
+    let svelteKitBinding = try await registry.register(
+      name: "sveltekit",
+      upstream: URL(string: "http://127.0.0.1:\(svelteKitUpstreamPort)")!
+    )
+    let nextJSBinding = try await registry.register(
+      name: "nextjs",
+      upstream: URL(string: "http://127.0.0.1:\(nextJSUpstreamPort)")!
+    )
+    let nuxtBinding = try await registry.register(
+      name: "nuxt",
+      upstream: URL(string: "http://127.0.0.1:\(nuxtUpstreamPort)")!
+    )
     precondition(firstBinding.route == "web-0")
     precondition(secondBinding.route == "web-1")
+    precondition(svelteKitBinding.route == "sveltekit-0")
+    precondition(nextJSBinding.route == "nextjs-0")
+    precondition(nuxtBinding.route == "nuxt-0")
 
     let multiplexer = Multiplexer(
       configuration: Multiplexer.Configuration(

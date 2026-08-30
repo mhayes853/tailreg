@@ -160,12 +160,17 @@ public struct MuxIngressResponder: HTTPResponder, Sendable {
 
   private func responseHeaders(from response: HTTPClientResponse) -> HTTPFields {
     let connectionHeaders = connectionTokens(response.headers["connection"])
+    // HTTPClient.shared decodes these bodies but preserves the upstream metadata.
+    let bodyWasDecoded = response.headers["content-encoding"].contains {
+      $0.lowercased() == "gzip" || $0.lowercased() == "deflate"
+    }
     var headers = HTTPFields()
     for header in response.headers {
       let name = header.name.lowercased()
       guard !Self.hopByHopHeaders.contains(name), !connectionHeaders.contains(name) else {
         continue
       }
+      if bodyWasDecoded && (name == "content-encoding" || name == "content-length") { continue }
       if name == "set-cookie" && header.value.lowercased().hasPrefix("\(cookieName.lowercased())=")
       {
         continue
