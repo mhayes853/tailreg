@@ -2,6 +2,8 @@ import AsyncHTTPClient
 import Foundation
 import HTTPTypes
 import Hummingbird
+import TailregCore
+import UUIDV7
 
 public struct MuxIngressResponder: HTTPResponder, Sendable {
   public typealias Context = BasicRequestContext
@@ -16,7 +18,6 @@ public struct MuxIngressResponder: HTTPResponder, Sendable {
     "connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer",
     "transfer-encoding", "upgrade"
   ]
-
   private enum ProxyError: Error {
     case invalidURL
   }
@@ -24,15 +25,21 @@ public struct MuxIngressResponder: HTTPResponder, Sendable {
   private let registry: BindingRegistry
   private let cookieName: String
   private let secureCookies: Bool
+  private let capturedHeaderPolicy: CapturedHeaderPolicy
+  private let captureRecorder: CaptureRecorder?
 
   public init(
     registry: BindingRegistry,
     cookieName: String,
-    secureCookies: Bool
+    secureCookies: Bool,
+    capturedHeaderPolicy: CapturedHeaderPolicy = .redactSensitiveValues,
+    captureRecorder: CaptureRecorder? = nil
   ) {
     self.registry = registry
     self.cookieName = cookieName
     self.secureCookies = secureCookies
+    self.capturedHeaderPolicy = capturedHeaderPolicy
+    self.captureRecorder = captureRecorder
   }
 
   public func respond(to request: Request, context: BasicRequestContext) async throws -> Response {
@@ -114,22 +121,196 @@ public struct MuxIngressResponder: HTTPResponder, Sendable {
     upstreamRequest.method = .RAW(value: request.method.rawValue)
     copyRequestHeaders(from: request, to: &upstreamRequest, route: resolved.binding.route)
 
+    let exchangeID = captureRecorder.map { _ in UUIDV7() }
+    if let captureRecorder, let exchangeID {
+      upstreamRequest.headers.add(name: "X-Tailreg-Request-ID", value: exchangeID.uuidString)
+      captureRecorder.open(
+        HTTPExchangeRecord(
+          id: exchangeID,
+          routeID: resolved.binding.id,
+          method: request.method.rawValue,
+          host: request.head.authority,
+          path: request.uri.path,
+          query: request.uri.query,
+          requestHeaders: upstreamRequest.headers.map { header in
+            capturedHeader(name: header.name.lowercased(), value: header.value)
+          },
+          startedAt: Date(),
+          tailscaleUserLogin: requestHeader("tailscale-user-login", in: request),
+          tailscaleUserName: requestHeader("tailscale-user-name", in: request)
+        )
+      )
+    }
+
     if request.method != .get && request.method != .head {
       let length: HTTPClientRequest.Body.Length =
         request.headers[.contentLength].flatMap { Int64($0) }.map { .known($0) } ?? .unknown
-      upstreamRequest.body = .stream(request.body, length: length)
+      if let captureRecorder, let exchangeID {
+        upstreamRequest.body = .stream(
+          CapturingRequestBodySequence(
+            base: request.body,
+            capture: RequestBodyCapture(),
+            exchangeID: exchangeID,
+            contentType: request.headers[.contentType],
+            recorder: captureRecorder
+          ),
+          length: length
+        )
+      } else {
+        upstreamRequest.body = .stream(request.body, length: length)
+      }
     }
 
-    let upstreamResponse = try await HTTPClient.shared.execute(
-      upstreamRequest,
-      timeout: .hours(24)
-    )
+    let upstreamResponse: HTTPClientResponse
+    do {
+      upstreamResponse = try await HTTPClient.shared.execute(
+        upstreamRequest,
+        timeout: .hours(24)
+      )
+    } catch {
+      if let captureRecorder, let exchangeID {
+        captureRecorder.responseStarted(
+          id: exchangeID,
+          at: Date(),
+          statusCode: Int(HTTPResponse.Status.badGateway.code),
+          headers: []
+        )
+        captureRecorder.complete(
+          id: exchangeID,
+          at: Date(),
+          outcome: .failed,
+          failure: "upstream_unavailable"
+        )
+      }
+      throw error
+    }
     let headers = responseHeaders(from: upstreamResponse)
+    let status = HTTPResponse.Status(code: Int(upstreamResponse.status.code))
+    if let captureRecorder, let exchangeID {
+      captureRecorder.responseStarted(
+        id: exchangeID,
+        at: Date(),
+        statusCode: Int(status.code),
+        headers: capturedHeaders(headers)
+      )
+    }
+
+    let body: ResponseBody
+    if let captureRecorder, let exchangeID {
+      body = capturedResponseBody(
+        upstreamResponse.body,
+        contentType: headers[.contentType],
+        exchangeID: exchangeID,
+        recorder: captureRecorder
+      )
+    } else {
+      body = ResponseBody(asyncSequence: upstreamResponse.body)
+    }
     return Response(
-      status: HTTPResponse.Status(code: Int(upstreamResponse.status.code)),
+      status: status,
       headers: headers,
-      body: ResponseBody(asyncSequence: upstreamResponse.body)
+      body: body
     )
+  }
+
+  private func capturedResponseBody(
+    _ upstreamBody: HTTPClientResponse.Body,
+    contentType: String?,
+    exchangeID: UUIDV7,
+    recorder: CaptureRecorder
+  ) -> ResponseBody {
+    ResponseBody { writer in
+      var capture = BodyCapture()
+      var iterator = upstreamBody.makeAsyncIterator()
+      while true {
+        let next: ByteBuffer?
+        do {
+          next = try await iterator.next()
+        } catch {
+          finishCapture(
+            capture,
+            exchangeID: exchangeID,
+            contentType: contentType,
+            outcome: .failed,
+            failure: "response_stream_failed",
+            recorder: recorder
+          )
+          throw error
+        }
+        guard let buffer = next else { break }
+        capture.observe(buffer)
+        do {
+          try await writer.write(buffer)
+        } catch {
+          finishCapture(
+            capture,
+            exchangeID: exchangeID,
+            contentType: contentType,
+            outcome: .cancelled,
+            failure: "client_disconnected",
+            recorder: recorder
+          )
+          throw error
+        }
+      }
+      do {
+        try await writer.finish(nil)
+      } catch {
+        finishCapture(
+          capture,
+          exchangeID: exchangeID,
+          contentType: contentType,
+          outcome: .cancelled,
+          failure: "client_disconnected",
+          recorder: recorder
+        )
+        throw error
+      }
+      finishCapture(
+        capture,
+        exchangeID: exchangeID,
+        contentType: contentType,
+        outcome: .complete,
+        recorder: recorder
+      )
+    }
+  }
+
+  private func finishCapture(
+    _ capture: BodyCapture,
+    exchangeID: UUIDV7,
+    contentType: String?,
+    outcome: HTTPExchangeOutcome,
+    failure: String? = nil,
+    recorder: CaptureRecorder
+  ) {
+    recorder.store(
+      capture.record(
+        exchangeID: exchangeID,
+        direction: .response,
+        contentType: contentType
+      )
+    )
+    recorder.complete(
+      id: exchangeID,
+      at: Date(),
+      outcome: outcome,
+      failure: failure
+    )
+  }
+
+  private func capturedHeaders(_ headers: HTTPFields) -> [CapturedHTTPHeader] {
+    headers.map { header in
+      capturedHeader(name: header.name.canonicalName, value: header.value)
+    }
+  }
+
+  private func capturedHeader(name: String, value: String) -> CapturedHTTPHeader {
+    capturedHeaderPolicy.capture(name: name, value: value)
+  }
+
+  private func requestHeader(_ name: String, in request: Request) -> String? {
+    request.headers.first { $0.name.canonicalName == name }?.value
   }
 
   private func copyRequestHeaders(
@@ -161,9 +342,10 @@ public struct MuxIngressResponder: HTTPResponder, Sendable {
   private func responseHeaders(from response: HTTPClientResponse) -> HTTPFields {
     let connectionHeaders = connectionTokens(response.headers["connection"])
     // HTTPClient.shared decodes these bodies but preserves the upstream metadata.
-    let bodyWasDecoded = response.headers["content-encoding"].contains {
-      $0.lowercased() == "gzip" || $0.lowercased() == "deflate"
-    }
+    let bodyWasDecoded = response.headers["content-encoding"]
+      .contains {
+        $0.lowercased() == "gzip" || $0.lowercased() == "deflate"
+      }
     var headers = HTTPFields()
     for header in response.headers {
       let name = header.name.lowercased()

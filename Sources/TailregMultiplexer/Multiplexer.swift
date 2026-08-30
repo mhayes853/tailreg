@@ -1,4 +1,27 @@
 import Hummingbird
+import SQLiteData
+import TailregCore
+
+public enum CapturedHeaderPolicy: Equatable, Sendable {
+  case redactSensitiveValues
+  case retainAllValues
+}
+
+extension CapturedHeaderPolicy {
+  private static let sensitiveNames: Set<String> = [
+    "authorization", "cookie", "proxy-authorization", "set-cookie", "x-api-key"
+  ]
+
+  func capture(name: String, value: String) -> CapturedHTTPHeader {
+    let normalizedName = name.lowercased()
+    let shouldRedact =
+      self == .redactSensitiveValues && Self.sensitiveNames.contains(normalizedName)
+    return CapturedHTTPHeader(
+      name: normalizedName,
+      value: shouldRedact ? "[REDACTED]" : value
+    )
+  }
+}
 
 public struct MultiplexerStatus: ResponseCodable, Equatable, Sendable {
   public let status: String
@@ -26,6 +49,7 @@ public struct Multiplexer: Sendable {
     public var ingressPort: Int
     public var routingCookieName: String
     public var secureCookies: Bool
+    public var capturedHeaderPolicy: CapturedHeaderPolicy
 
     public init(
       adminHost: String = "127.0.0.1",
@@ -33,7 +57,8 @@ public struct Multiplexer: Sendable {
       ingressHost: String = "127.0.0.1",
       ingressPort: Int = 9000,
       routingCookieName: String = "__Host-tailreg-route",
-      secureCookies: Bool = true
+      secureCookies: Bool = true,
+      capturedHeaderPolicy: CapturedHeaderPolicy = .redactSensitiveValues
     ) {
       self.adminHost = adminHost
       self.adminPort = adminPort
@@ -41,18 +66,31 @@ public struct Multiplexer: Sendable {
       self.ingressPort = ingressPort
       self.routingCookieName = routingCookieName
       self.secureCookies = secureCookies
+      self.capturedHeaderPolicy = capturedHeaderPolicy
     }
   }
 
   public let configuration: Configuration
   public let registry: BindingRegistry
+  public let captureRecorder: CaptureRecorder?
 
   public init(
     configuration: Configuration = Configuration(),
-    registry: BindingRegistry = BindingRegistry()
+    registry: BindingRegistry = BindingRegistry(),
+    captureRecorder: CaptureRecorder? = nil
   ) {
     self.configuration = configuration
     self.registry = registry
+    self.captureRecorder = captureRecorder
+  }
+
+  public init(
+    configuration: Configuration = Configuration(),
+    database: any DatabaseWriter
+  ) {
+    self.configuration = configuration
+    self.registry = BindingRegistry(database: database)
+    self.captureRecorder = CaptureRecorder(database: database)
   }
 
   public func buildApplication() -> Application<RouterResponder<BasicRequestContext>> {
@@ -75,7 +113,9 @@ public struct Multiplexer: Sendable {
       responder: MuxIngressResponder(
         registry: registry,
         cookieName: configuration.routingCookieName,
-        secureCookies: configuration.secureCookies
+        secureCookies: configuration.secureCookies,
+        capturedHeaderPolicy: configuration.capturedHeaderPolicy,
+        captureRecorder: captureRecorder
       ),
       configuration: ApplicationConfiguration(
         address: .hostname(configuration.ingressHost, port: configuration.ingressPort),

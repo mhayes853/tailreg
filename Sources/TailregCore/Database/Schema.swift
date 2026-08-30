@@ -6,6 +6,8 @@ extension TailscaleServeProtocol: QueryBindable, QueryDecodable {}
 extension TailscaleBindingStatus: QueryBindable, QueryDecodable {}
 extension TailscaleBindingEndReason: QueryBindable, QueryDecodable {}
 extension ProcessStream: QueryBindable, QueryDecodable {}
+extension HTTPExchangeOutcome: QueryBindable, QueryDecodable {}
+extension HTTPExchangeBodyDirection: QueryBindable, QueryDecodable {}
 
 @Table("bindings")
 public struct TailscaleBindingRecord: Hashable, Sendable {
@@ -74,6 +76,146 @@ public struct LogRecord: Hashable, Sendable {
     self.stream = stream
     self.message = message
     self.at = at
+  }
+}
+
+public enum HTTPExchangeOutcome: String, Codable, Equatable, Sendable {
+  case inProgress = "in-progress"
+  case complete
+  case failed
+  case cancelled
+  case abandoned
+}
+
+public enum HTTPExchangeBodyDirection: String, Codable, Equatable, Sendable {
+  case request
+  case response
+}
+
+@Selection
+public struct CapturedHTTPHeader: Codable, Equatable, Hashable, Sendable {
+  public var name: String
+  public var value: String
+
+  public init(name: String, value: String) {
+    self.name = name
+    self.value = value
+  }
+}
+
+@Table("muxRoutes")
+public struct MuxRouteRecord: Hashable, Sendable {
+  public let id: UUIDV7
+  public var name: String
+  public var route: String
+  public var upstreamURL: String
+  public var createdAt: Date
+  public var endedAt: Date?
+
+  public init(
+    id: UUIDV7 = UUIDV7(),
+    name: String,
+    route: String,
+    upstreamURL: String,
+    createdAt: Date,
+    endedAt: Date? = nil
+  ) {
+    self.id = id
+    self.name = name
+    self.route = route
+    self.upstreamURL = upstreamURL
+    self.createdAt = createdAt
+    self.endedAt = endedAt
+  }
+}
+
+@Table("httpExchanges")
+public struct HTTPExchangeRecord: Hashable, Sendable {
+  public let id: UUIDV7
+  public var routeID: UUIDV7
+  public var method: String
+  public var host: String?
+  public var path: String
+  public var query: String?
+  @Column(as: [CapturedHTTPHeader].JSONRepresentation.self)
+  public var requestHeaders: [CapturedHTTPHeader]
+  public var requestBodyBytes: Int
+  public var startedAt: Date
+  public var responseStartedAt: Date?
+  public var statusCode: Int?
+  @Column(as: [CapturedHTTPHeader].JSONRepresentation?.self)
+  public var responseHeaders: [CapturedHTTPHeader]?
+  public var responseBodyBytes: Int
+  public var completedAt: Date?
+  public var outcome: HTTPExchangeOutcome
+  public var failure: String?
+  public var tailscaleUserLogin: String?
+  public var tailscaleUserName: String?
+
+  public init(
+    id: UUIDV7 = UUIDV7(),
+    routeID: UUIDV7,
+    method: String,
+    host: String? = nil,
+    path: String,
+    query: String? = nil,
+    requestHeaders: [CapturedHTTPHeader],
+    requestBodyBytes: Int = 0,
+    startedAt: Date,
+    responseStartedAt: Date? = nil,
+    statusCode: Int? = nil,
+    responseHeaders: [CapturedHTTPHeader]? = nil,
+    responseBodyBytes: Int = 0,
+    completedAt: Date? = nil,
+    outcome: HTTPExchangeOutcome = .inProgress,
+    failure: String? = nil,
+    tailscaleUserLogin: String? = nil,
+    tailscaleUserName: String? = nil
+  ) {
+    self.id = id
+    self.routeID = routeID
+    self.method = method
+    self.host = host
+    self.path = path
+    self.query = query
+    self.requestHeaders = requestHeaders
+    self.requestBodyBytes = requestBodyBytes
+    self.startedAt = startedAt
+    self.responseStartedAt = responseStartedAt
+    self.statusCode = statusCode
+    self.responseHeaders = responseHeaders
+    self.responseBodyBytes = responseBodyBytes
+    self.completedAt = completedAt
+    self.outcome = outcome
+    self.failure = failure
+    self.tailscaleUserLogin = tailscaleUserLogin
+    self.tailscaleUserName = tailscaleUserName
+  }
+}
+
+@Table("httpExchangeBodies")
+public struct HTTPExchangeBodyRecord: Hashable, Sendable {
+  public var exchangeID: UUIDV7
+  public var direction: HTTPExchangeBodyDirection
+  public var contentType: String?
+  public var content: Data?
+  public var observedByteCount: Int
+  public var omitted: Bool
+
+  public init(
+    exchangeID: UUIDV7,
+    direction: HTTPExchangeBodyDirection,
+    contentType: String? = nil,
+    content: Data?,
+    observedByteCount: Int,
+    omitted: Bool
+  ) {
+    self.exchangeID = exchangeID
+    self.direction = direction
+    self.contentType = contentType
+    self.content = content
+    self.observedByteCount = observedByteCount
+    self.omitted = omitted
   }
 }
 
@@ -152,6 +294,106 @@ public func tailregDatabaseMigrator() -> DatabaseMigrator {
     try #sql(
       """
       CREATE INDEX "logs_binding" ON "logs" ("bindingID", "id")
+      """
+    )
+    .execute(db)
+  }
+
+  migrator.registerMigration("v2: create mux routes and HTTP exchanges") { db in
+    try #sql(
+      """
+      CREATE TABLE "muxRoutes" (
+        "id"          TEXT NOT NULL PRIMARY KEY,
+        "name"        TEXT NOT NULL,
+        "route"       TEXT NOT NULL,
+        "upstreamURL" TEXT NOT NULL,
+        "createdAt"   TEXT NOT NULL,
+        "endedAt"     TEXT,
+
+        CHECK ("name" <> ''),
+        CHECK ("route" <> ''),
+        CHECK ("route" GLOB '[a-z0-9]*'),
+        CHECK ("route" NOT GLOB '*[^a-z0-9-]*'),
+        CHECK ("upstreamURL" <> '')
+      ) STRICT
+      """
+    )
+    .execute(db)
+
+    try #sql(
+      """
+      CREATE UNIQUE INDEX "muxRoutes_live_route"
+        ON "muxRoutes" ("route")
+        WHERE "endedAt" IS NULL
+      """
+    )
+    .execute(db)
+
+    try #sql(
+      """
+      CREATE TABLE "httpExchanges" (
+        "id"                 TEXT    NOT NULL PRIMARY KEY,
+        "routeID"            TEXT    NOT NULL
+          REFERENCES "muxRoutes"("id") ON DELETE CASCADE,
+        "method"             TEXT    NOT NULL,
+        "host"               TEXT,
+        "path"               TEXT    NOT NULL,
+        "query"              TEXT,
+        "requestHeaders"     TEXT    NOT NULL,
+        "requestBodyBytes"   INTEGER NOT NULL DEFAULT 0,
+        "startedAt"          TEXT    NOT NULL,
+        "responseStartedAt"  TEXT,
+        "statusCode"         INTEGER,
+        "responseHeaders"    TEXT,
+        "responseBodyBytes"  INTEGER NOT NULL DEFAULT 0,
+        "completedAt"        TEXT,
+        "outcome"            TEXT    NOT NULL,
+        "failure"            TEXT,
+        "tailscaleUserLogin" TEXT,
+        "tailscaleUserName"  TEXT,
+
+        CHECK (json_valid("requestHeaders")),
+        CHECK ("responseHeaders" IS NULL OR json_valid("responseHeaders")),
+        CHECK ("requestBodyBytes" >= 0),
+        CHECK ("responseBodyBytes" >= 0),
+        CHECK ("statusCode" IS NULL OR "statusCode" BETWEEN 100 AND 599),
+        CHECK (
+          "outcome" IN ('in-progress', 'complete', 'failed', 'cancelled', 'abandoned')
+        ),
+        CHECK (("outcome" = 'in-progress') = ("completedAt" IS NULL))
+      ) STRICT
+      """
+    )
+    .execute(db)
+
+    try #sql(
+      """
+      CREATE INDEX "httpExchanges_route"
+        ON "httpExchanges" ("routeID", "id" DESC)
+      """
+    )
+    .execute(db)
+
+    try #sql(
+      """
+      CREATE TABLE "httpExchangeBodies" (
+        "exchangeID"        TEXT    NOT NULL
+          REFERENCES "httpExchanges"("id") ON DELETE CASCADE,
+        "direction"         TEXT    NOT NULL,
+        "contentType"       TEXT,
+        "content"           BLOB,
+        "observedByteCount" INTEGER NOT NULL,
+        "omitted"           INTEGER NOT NULL,
+
+        PRIMARY KEY ("exchangeID", "direction"),
+        CHECK ("direction" IN ('request', 'response')),
+        CHECK ("observedByteCount" >= 0),
+        CHECK ("omitted" IN (0, 1)),
+        CHECK (("content" IS NULL) = ("omitted" = 1)),
+        CHECK ("content" IS NULL OR length("content") <= 1048576),
+        CHECK ("content" IS NULL OR length("content") = "observedByteCount"),
+        CHECK ("omitted" = 0 OR "observedByteCount" > 1048576)
+      ) STRICT
       """
     )
     .execute(db)

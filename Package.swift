@@ -68,6 +68,7 @@ let package = Package(
             name: "TailregMultiplexer",
             dependencies: [
                 "TailregCore",
+                .product(name: "AsyncAlgorithms", package: "swift-async-algorithms"),
                 .product(name: "AsyncHTTPClient", package: "async-http-client"),
                 .product(name: "Hummingbird", package: "hummingbird")
             ]

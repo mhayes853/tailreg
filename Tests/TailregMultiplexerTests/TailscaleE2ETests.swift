@@ -1,4 +1,5 @@
 import Foundation
+import SQLiteData
 import TailregCore
 import Testing
 
@@ -13,6 +14,7 @@ import Testing
 struct `MUX Tailscale E2E tests` {
   private static let ingressPort = 19_100
   private static let tailnetPort = 8_443
+  private static let captureAdminPort = 19_106
 
   private enum FixtureError: Error {
     case executableNotFound
@@ -34,9 +36,10 @@ struct `MUX Tailscale E2E tests` {
     )
     defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
 
-    let fixture = try startFixture()
+    let databasePath = temporaryDirectory.appendingPathComponent("tailreg.sqlite").path
+    let fixture = try startFixture(databasePath: databasePath)
     let binder = try TailscaleBinder.standard(
-      databasePath: temporaryDirectory.appendingPathComponent("tailreg.sqlite").path
+      databasePath: databasePath
     )
 
     do {
@@ -67,6 +70,24 @@ struct `MUX Tailscale E2E tests` {
 
         #expect(endpointHTTPResponse.statusCode == 200)
         #expect(endpoint == EndpointResponse(binding: route, result: "correct-upstream"))
+
+        let captureURL = URL(
+          string: "http://127.0.0.1:\(Self.captureAdminPort)/captures/\(route)"
+        )!
+        let (_, captureResponse) = try await session.data(from: captureURL)
+        #expect((captureResponse as? HTTPURLResponse)?.statusCode == 200)
+      }
+
+      let captureDatabase = try openTailregDatabase(path: databasePath, kind: .queue)
+      for route in ["web-0", "web-1"] {
+        let paths: [String] = try await captureDatabase.read { db -> [String] in
+          let routeRecord = try MuxRouteRecord.where { $0.route.eq(route) }.fetchOne(db)
+          guard let routeRecord else { return [String]() }
+          return try HTTPExchangeRecord.page(for: routeRecord.id, limit: 100)
+            .fetchAll(db)
+            .map(\.path)
+        }
+        #expect(paths.contains { $0.hasSuffix("/route/endpoint") })
       }
 
       _ = try await binder.unbind(tailnetPort: Self.tailnetPort)
@@ -78,7 +99,7 @@ struct `MUX Tailscale E2E tests` {
     }
   }
 
-  private func startFixture() throws -> Process {
+  private func startFixture(databasePath: String) throws -> Process {
     let testExecutable = URL(fileURLWithPath: CommandLine.arguments[0])
     var searchDirectory = testExecutable.deletingLastPathComponent()
     var fixtureURL: URL?
@@ -96,6 +117,7 @@ struct `MUX Tailscale E2E tests` {
     process.executableURL = fixtureURL
     var environment = ProcessInfo.processInfo.environment
     environment["TAILREG_E2E_SECURE_COOKIES"] = "1"
+    environment["TAILREG_E2E_DATABASE_PATH"] = databasePath
     process.environment = environment
     process.standardOutput = FileHandle.nullDevice
     process.standardError = FileHandle.nullDevice

@@ -1,4 +1,6 @@
 import Foundation
+import SQLiteData
+import TailregCore
 import TailregMultiplexer
 import Testing
 
@@ -57,7 +59,7 @@ struct `Binding registry tests` {
     )
     let token = try #require(await registry.issueToken(for: binding.route))
 
-    #expect(await registry.unregister(route: binding.route) == binding)
+    #expect(try await registry.unregister(route: binding.route) == binding)
     #expect(await registry.binding(route: binding.route) == nil)
     #expect(await registry.binding(token: token) == nil)
     #expect(await registry.bindings().isEmpty)
@@ -73,5 +75,31 @@ struct `Binding registry tests` {
     await #expect(throws: BindingRegistryError.invalidUpstream) {
       try await registry.register(name: "web", upstream: URL(fileURLWithPath: "/tmp/socket"))
     }
+  }
+
+  @Test
+  func `Persisted routes remain reserved across registry instances`() async throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("tailreg-registry-test-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let database = try openTailregDatabase(
+      path: directory.appendingPathComponent("tailreg.sqlite").path,
+      kind: .queue
+    )
+
+    let firstRegistry = BindingRegistry(database: database)
+    let first = try await firstRegistry.register(
+      name: "web",
+      upstream: URL(string: "http://127.0.0.1:3000")!
+    )
+    let secondRegistry = BindingRegistry(database: database)
+    let second = try await secondRegistry.register(
+      name: "web",
+      upstream: URL(string: "http://127.0.0.1:3001")!
+    )
+
+    #expect(first.route == "web-0")
+    #expect(second.route == "web-1")
   }
 }
