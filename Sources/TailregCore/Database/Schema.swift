@@ -219,6 +219,36 @@ public struct HTTPExchangeBodyRecord: Hashable, Sendable {
   }
 }
 
+@Table("httpExchangeClassifications")
+public struct HTTPExchangeClassificationRecord: Hashable, Sendable {
+  public var exchangeID: UUIDV7
+  public var policyVersion: Int
+  public var category: HTTPExchangeClassificationCategory
+  public var ruleID: String
+  @Column(as: RequestTag.RawRepresentation.self)
+  public var tags: RequestTag
+  public var requestBodyDisposition: HTTPBodyCaptureDisposition
+  public var responseBodyDisposition: HTTPBodyCaptureDisposition
+
+  public init(
+    exchangeID: UUIDV7,
+    policyVersion: Int,
+    category: HTTPExchangeClassificationCategory,
+    ruleID: String,
+    tags: RequestTag,
+    requestBodyDisposition: HTTPBodyCaptureDisposition,
+    responseBodyDisposition: HTTPBodyCaptureDisposition
+  ) {
+    self.exchangeID = exchangeID
+    self.policyVersion = policyVersion
+    self.category = category
+    self.ruleID = ruleID
+    self.tags = tags
+    self.requestBodyDisposition = requestBodyDisposition
+    self.responseBodyDisposition = responseBodyDisposition
+  }
+}
+
 public func tailregDatabaseConfiguration() -> Configuration {
   var configuration = Configuration()
   configuration.busyMode = .timeout(5)
@@ -394,6 +424,58 @@ public func tailregDatabaseMigrator() -> DatabaseMigrator {
         CHECK ("content" IS NULL OR length("content") = "observedByteCount"),
         CHECK ("omitted" = 0 OR "observedByteCount" > 1048576)
       ) STRICT
+      """
+    )
+    .execute(db)
+  }
+
+  migrator.registerMigration("v3: classify HTTP exchanges") { db in
+    try #sql(
+      """
+      CREATE TABLE "httpExchangeClassifications" (
+        "exchangeID"              TEXT    NOT NULL PRIMARY KEY
+          REFERENCES "httpExchanges"("id") ON DELETE CASCADE,
+        "policyVersion"           INTEGER NOT NULL,
+        "category"                TEXT    NOT NULL,
+        "ruleID"                  TEXT    NOT NULL,
+        "tags"                    INTEGER NOT NULL,
+        "requestBodyDisposition"  TEXT    NOT NULL,
+        "responseBodyDisposition" TEXT    NOT NULL,
+
+        CHECK ("policyVersion" > 0),
+        CHECK ("ruleID" <> ''),
+        CHECK ("tags" >= 0),
+        CHECK (
+          "category" IN (
+            'api', 'framework-data', 'document', 'asset',
+            'dev-runtime', 'telemetry', 'stream', 'unknown'
+          )
+        ),
+        CHECK (
+          "requestBodyDisposition" IN ('retain', 'discard', 'provisional')
+        ),
+        CHECK (
+          "responseBodyDisposition" IN ('retain', 'discard', 'provisional')
+        )
+      ) STRICT
+      """
+    )
+    .execute(db)
+
+    try #sql(
+      """
+      CREATE INDEX "httpExchangeClassifications_rule"
+        ON "httpExchangeClassifications" (
+          "policyVersion", "ruleID", "exchangeID" DESC
+        )
+      """
+    )
+    .execute(db)
+
+    try #sql(
+      """
+      CREATE INDEX "httpExchangeClassifications_category"
+        ON "httpExchangeClassifications" ("category", "exchangeID" DESC)
       """
     )
     .execute(db)

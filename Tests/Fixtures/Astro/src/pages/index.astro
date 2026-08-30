@@ -1,0 +1,23 @@
+---
+import Deferred from "../components/Deferred.astro";
+---
+
+<!doctype html>
+<html lang="en">
+  <head><meta charset="utf-8" /><title>Astro fixture</title></head>
+  <body>
+    <h1>Astro fixture</h1>
+    <button data-testid="framework-action">Run Astro action</button>
+    <output data-testid="result">idle</output>
+    <Deferred server:defer />
+    <script>
+      import { actions } from "astro:actions";
+
+      document.querySelector('[data-testid="framework-action"]')?.addEventListener("click", async () => {
+        const output = document.querySelector('[data-testid="result"]');
+        const { data } = await actions.classify({ value: "correct-upstream" });
+        if (output && data) output.textContent = `${data.framework}:${data.result}`;
+      });
+    </script>
+  </body>
+</html>

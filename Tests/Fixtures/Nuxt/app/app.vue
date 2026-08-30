@@ -17,6 +17,10 @@ async function request(path: string) {
     <button data-testid="relative-fetch" @click="request('route/endpoint')">
       Relative fetch
     </button>
+    <NuxtLink data-testid="framework-navigation" to="/classification-target">
+      Framework navigation
+    </NuxtLink>
     <output data-testid="result">{{ result }}</output>
   </main>
+  <NuxtPage />
 </template>

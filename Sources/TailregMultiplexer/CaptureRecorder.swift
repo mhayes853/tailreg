@@ -6,7 +6,7 @@ import UUIDV7
 
 public final class CaptureRecorder: Sendable {
   private enum Event: Sendable {
-    case opened(HTTPExchangeRecord)
+    case opened(OpenedEvent)
     case responseStarted(
       id: UUIDV7,
       at: Date,
@@ -22,6 +22,11 @@ public final class CaptureRecorder: Sendable {
     )
     case abandon(Date)
     case flush(CheckedContinuation<Void, Never>)
+  }
+
+  private struct OpenedEvent: Sendable {
+    let record: HTTPExchangeRecord
+    let classification: HTTPExchangeClassificationRecord?
   }
 
   private struct ResponseStartedEvent {
@@ -40,7 +45,7 @@ public final class CaptureRecorder: Sendable {
 
   private struct EventBatch {
     var abandonedAt: Date?
-    var opened: [HTTPExchangeRecord] = []
+    var opened: [OpenedEvent] = []
     var responsesStarted: [ResponseStartedEvent] = []
     var bodies: [HTTPExchangeBodyRecord] = []
     var completed: [CompletedEvent] = []
@@ -50,8 +55,8 @@ public final class CaptureRecorder: Sendable {
         switch event {
         case .abandon(let at):
           abandonedAt = at
-        case .opened(let record):
-          opened.append(record)
+        case .opened(let event):
+          opened.append(event)
         case .responseStarted(let id, let at, let statusCode, let headers):
           responsesStarted.append(
             ResponseStartedEvent(id: id, at: at, statusCode: statusCode, headers: headers)
@@ -101,8 +106,11 @@ public final class CaptureRecorder: Sendable {
     continuation.yield(.abandon(Date()))
   }
 
-  public func open(_ record: HTTPExchangeRecord) {
-    continuation.yield(.opened(record))
+  public func open(
+    _ record: HTTPExchangeRecord,
+    classification: HTTPExchangeClassificationRecord? = nil
+  ) {
+    continuation.yield(.opened(OpenedEvent(record: record, classification: classification)))
   }
 
   public func responseStarted(
@@ -155,7 +163,11 @@ public final class CaptureRecorder: Sendable {
     }
 
     if !batch.opened.isEmpty {
-      try HTTPExchangeRecord.insert { batch.opened }.execute(db)
+      try HTTPExchangeRecord.insert { batch.opened.map(\.record) }.execute(db)
+      let classifications = batch.opened.compactMap(\.classification)
+      if !classifications.isEmpty {
+        try HTTPExchangeClassificationRecord.insert { classifications }.execute(db)
+      }
     }
 
     for response in batch.responsesStarted {

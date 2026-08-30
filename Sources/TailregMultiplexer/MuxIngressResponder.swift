@@ -124,6 +124,14 @@ public struct MuxIngressResponder: HTTPResponder, Sendable {
     let exchangeID = captureRecorder.map { _ in UUIDV7() }
     if let captureRecorder, let exchangeID {
       upstreamRequest.headers.add(name: "X-Tailreg-Request-ID", value: exchangeID.uuidString)
+      let classification = RequestClassifier.classify(
+        RequestFacts(
+          method: request.method.rawValue,
+          path: resolved.upstreamPath,
+          query: request.uri.query,
+          headers: request.headers
+        )
+      )
       captureRecorder.open(
         HTTPExchangeRecord(
           id: exchangeID,
@@ -138,7 +146,8 @@ public struct MuxIngressResponder: HTTPResponder, Sendable {
           startedAt: Date(),
           tailscaleUserLogin: requestHeader("tailscale-user-login", in: request),
           tailscaleUserName: requestHeader("tailscale-user-name", in: request)
-        )
+        ),
+        classification: classification.record(exchangeID: exchangeID)
       )
     }
 

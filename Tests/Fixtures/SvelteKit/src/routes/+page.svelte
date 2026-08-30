@@ -15,4 +15,5 @@
 <h1>SvelteKit fixture</h1>
 <button data-testid="absolute-fetch" onclick={() => request("/route/endpoint")}>Absolute fetch</button>
 <button data-testid="relative-fetch" onclick={() => request("route/endpoint")}>Relative fetch</button>
+<a data-testid="framework-navigation" href="classification-target">Framework navigation</a>
 <output data-testid="result">{result}</output>

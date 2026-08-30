@@ -78,7 +78,16 @@ struct `MUX capture tests` {
       requestHeaders: [],
       startedAt: Date()
     )
-    recorder.open(exchange)
+    let classification = HTTPExchangeClassificationRecord(
+      exchangeID: exchange.id,
+      policyVersion: 1,
+      category: .api,
+      ruleID: "request.structured-or-mutation",
+      tags: [.mutation, .structuredBody],
+      requestBodyDisposition: .retain,
+      responseBodyDisposition: .retain
+    )
+    recorder.open(exchange, classification: classification)
     recorder.responseStarted(
       id: exchange.id,
       at: Date(),
@@ -112,7 +121,8 @@ struct `MUX capture tests` {
       let exchange = try HTTPExchangeRecord.fetchOne(db)
       return (
         try #require(exchange),
-        try HTTPExchangeBodyRecord.fetchAll(db)
+        try HTTPExchangeBodyRecord.fetchAll(db),
+        try HTTPExchangeClassificationRecord.fetchOne(db)
       )
     }
     #expect(stored.0.statusCode == 201)
@@ -120,6 +130,7 @@ struct `MUX capture tests` {
     #expect(stored.0.responseBodyBytes == 7)
     #expect(stored.0.outcome == .complete)
     #expect(stored.1.count == 2)
+    #expect(stored.2 == classification)
 
     await recorder.finish()
   }

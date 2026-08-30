@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useState } from "react";
 
 export default function Page() {
@@ -20,6 +21,9 @@ export default function Page() {
       <button data-testid="relative-fetch" onClick={() => request("route/endpoint")}>
         Relative fetch
       </button>
+      <Link data-testid="framework-navigation" href="/classification-target" prefetch={false}>
+        Framework navigation
+      </Link>
       <output data-testid="result">{result}</output>
     </main>
   );
