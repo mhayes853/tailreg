@@ -13,11 +13,7 @@ jobs:
   test:
     strategy:
       matrix:
-        include:
-          - os: ubuntu-latest
-            build-system: native
-          - os: macos-latest
-            build-system: xcode
+        os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     steps:
@@ -30,7 +26,7 @@ jobs:
           echo "nproc: $(nproc 2>/dev/null || sysctl -n hw.ncpu)"
           uname -a
       - name: Run tests
-        run: swift test --build-system ${{ matrix.build-system }}
+        run: swift test --disable-experimental-prebuilts
 
   browser-test:
     runs-on: ubuntu-latest
