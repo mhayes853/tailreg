@@ -86,11 +86,15 @@ public struct Multiplexer: Sendable {
 
   public init(
     configuration: Configuration = Configuration(),
-    database: any DatabaseWriter
+    database: any DatabaseWriter,
+    classificationRefiner: (any RequestClassificationRefining)? = nil
   ) {
     self.configuration = configuration
     self.registry = BindingRegistry(database: database)
-    self.captureRecorder = CaptureRecorder(database: database)
+    self.captureRecorder = CaptureRecorder(
+      database: database,
+      classificationRefiner: classificationRefiner
+    )
   }
 
   public func buildApplication() -> Application<RouterResponder<BasicRequestContext>> {

@@ -18,6 +18,14 @@ export default defineConfig({
   webServer: [
     {
       command:
+        "npm run build --workspace tailreg-e2e-astro && exec node Tests/Fixtures/Astro/dist/server/entry.mjs",
+      url: "http://127.0.0.1:19107/",
+      reuseExistingServer: false,
+      timeout: 120_000,
+      env: { HOST: "127.0.0.1", PORT: "19107" },
+    },
+    {
+      command:
         "npm run build --workspace tailreg-e2e-nextjs && exec node node_modules/next/dist/bin/next start Tests/Fixtures/NextJS --hostname 127.0.0.1 --port 19104",
       url: "http://127.0.0.1:19104/",
       reuseExistingServer: false,
@@ -38,6 +46,14 @@ export default defineConfig({
       reuseExistingServer: false,
       timeout: 120_000,
       env: { PORT: "19103", HOST: "127.0.0.1" },
+    },
+    {
+      command:
+        "npm run build --workspace tailreg-e2e-tanstack-start && exec node Tests/Fixtures/TanStackStart/.output/server/index.mjs",
+      url: "http://127.0.0.1:19108/",
+      reuseExistingServer: false,
+      timeout: 120_000,
+      env: { HOST: "127.0.0.1", PORT: "19108" },
     },
     {
       command:

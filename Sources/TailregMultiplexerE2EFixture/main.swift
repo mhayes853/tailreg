@@ -18,6 +18,16 @@ private struct FixtureCapturedExchange: Codable, Sendable {
   let requestBodyOmitted: Bool?
   let responseBody: String?
   let responseBodyOmitted: Bool?
+  let classification: FixtureCaptureClassification?
+}
+
+private struct FixtureCaptureClassification: Codable, Sendable {
+  let policyVersion: Int
+  let category: String
+  let ruleID: String
+  let tags: [String]
+  let requestBodyDisposition: String
+  let responseBodyDisposition: String
 }
 
 private struct FixtureCaptureResponse: ResponseCodable {
@@ -34,6 +44,8 @@ enum TailregMultiplexerE2EFixture {
     let nextJSUpstreamPort = 19_104
     let nuxtUpstreamPort = 19_105
     let captureAdminPort = 19_106
+    let astroUpstreamPort = 19_107
+    let tanStackStartUpstreamPort = 19_108
     let ingressPort = 19_100
     let secureCookies = ProcessInfo.processInfo.environment["TAILREG_E2E_SECURE_COOKIES"] == "1"
     let routingCookieName = secureCookies ? "__Host-tailreg-route" : "tailreg-route"
@@ -59,31 +71,21 @@ enum TailregMultiplexerE2EFixture {
       database: database
     )
     let registry = multiplexer.registry
-    let firstBinding = try await registry.register(
-      name: "web",
-      upstream: URL(string: "http://127.0.0.1:\(firstUpstreamPort)")!
-    )
-    let secondBinding = try await registry.register(
-      name: "web",
-      upstream: URL(string: "http://127.0.0.1:\(secondUpstreamPort)")!
-    )
-    let svelteKitBinding = try await registry.register(
-      name: "sveltekit",
-      upstream: URL(string: "http://127.0.0.1:\(svelteKitUpstreamPort)")!
-    )
-    let nextJSBinding = try await registry.register(
-      name: "nextjs",
-      upstream: URL(string: "http://127.0.0.1:\(nextJSUpstreamPort)")!
-    )
-    let nuxtBinding = try await registry.register(
-      name: "nuxt",
-      upstream: URL(string: "http://127.0.0.1:\(nuxtUpstreamPort)")!
-    )
-    precondition(firstBinding.route == "web-0")
-    precondition(secondBinding.route == "web-1")
-    precondition(svelteKitBinding.route == "sveltekit-0")
-    precondition(nextJSBinding.route == "nextjs-0")
-    precondition(nuxtBinding.route == "nuxt-0")
+    for (name, port, route) in [
+      ("web", firstUpstreamPort, "web-0"),
+      ("web", secondUpstreamPort, "web-1"),
+      ("sveltekit", svelteKitUpstreamPort, "sveltekit-0"),
+      ("nextjs", nextJSUpstreamPort, "nextjs-0"),
+      ("nuxt", nuxtUpstreamPort, "nuxt-0"),
+      ("astro", astroUpstreamPort, "astro-0"),
+      ("tanstack-start", tanStackStartUpstreamPort, "tanstack-start-0")
+    ] {
+      let binding = try await registry.register(
+        name: name,
+        upstream: URL(string: "http://127.0.0.1:\(port)")!
+      )
+      precondition(binding.route == route)
+    }
 
     guard let captureRecorder = multiplexer.captureRecorder else {
       preconditionFailure("The E2E fixture requires capture storage")
@@ -132,6 +134,10 @@ enum TailregMultiplexerE2EFixture {
           try HTTPExchangeBodyRecord
           .where { $0.exchangeID.in(exchanges.map(\.id)) }
           .fetchAll(db)
+        let classifications =
+          try HTTPExchangeClassificationRecord
+          .where { $0.exchangeID.in(exchanges.map(\.id)) }
+          .fetchAll(db)
         let requestBodiesByExchange = Dictionary(
           uniqueKeysWithValues: bodies.filter { $0.direction == .request }
             .map {
@@ -144,11 +150,15 @@ enum TailregMultiplexerE2EFixture {
               ($0.exchangeID, $0)
             }
         )
+        let classificationsByExchange = Dictionary(
+          uniqueKeysWithValues: classifications.map { ($0.exchangeID, $0) }
+        )
         return FixtureCaptureResponse(
           route: route,
           exchanges: exchanges.map { exchange in
             let requestBody = requestBodiesByExchange[exchange.id]
             let responseBody = responseBodiesByExchange[exchange.id]
+            let classification = classificationsByExchange[exchange.id]
             return FixtureCapturedExchange(
               method: exchange.method,
               path: exchange.path,
@@ -157,7 +167,17 @@ enum TailregMultiplexerE2EFixture {
               requestBody: requestBody?.content.map { String(decoding: $0, as: UTF8.self) },
               requestBodyOmitted: requestBody?.omitted,
               responseBody: responseBody?.content.map { String(decoding: $0, as: UTF8.self) },
-              responseBodyOmitted: responseBody?.omitted
+              responseBodyOmitted: responseBody?.omitted,
+              classification: classification.map {
+                FixtureCaptureClassification(
+                  policyVersion: $0.policyVersion,
+                  category: $0.category.rawValue,
+                  ruleID: $0.ruleID,
+                  tags: $0.tags.names,
+                  requestBodyDisposition: $0.requestBodyDisposition.rawValue,
+                  responseBodyDisposition: $0.responseBodyDisposition.rawValue
+                )
+              }
             )
           }
         )
