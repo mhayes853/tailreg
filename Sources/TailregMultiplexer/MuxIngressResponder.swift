@@ -18,6 +18,11 @@ public struct MuxIngressResponder: HTTPResponder, Sendable {
     "connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer",
     "transfer-encoding", "upgrade"
   ]
+  private static let refinementHeaderNames: Set<String> = [
+    "accept", "content-type", "hx-request", "next-action", "next-router-prefetch",
+    "next-router-segment-prefetch", "purpose", "rsc", "sec-fetch-dest", "sec-fetch-mode",
+    "sec-fetch-site", "sec-purpose", "x-sveltekit-action"
+  ]
   private enum ProxyError: Error {
     case invalidURL
   }
@@ -124,14 +129,13 @@ public struct MuxIngressResponder: HTTPResponder, Sendable {
     let exchangeID = captureRecorder.map { _ in UUIDV7() }
     if let captureRecorder, let exchangeID {
       upstreamRequest.headers.add(name: "X-Tailreg-Request-ID", value: exchangeID.uuidString)
-      let classification = RequestClassifier.classify(
-        RequestFacts(
-          method: request.method.rawValue,
-          path: resolved.upstreamPath,
-          query: request.uri.query,
-          headers: request.headers
-        )
+      let facts = RequestFacts(
+        method: request.method.rawValue,
+        path: resolved.upstreamPath,
+        query: request.uri.query,
+        headers: request.headers
       )
+      let classification = RequestClassifier.classify(facts)
       captureRecorder.open(
         HTTPExchangeRecord(
           id: exchangeID,
@@ -147,7 +151,20 @@ public struct MuxIngressResponder: HTTPResponder, Sendable {
           tailscaleUserLogin: requestHeader("tailscale-user-login", in: request),
           tailscaleUserName: requestHeader("tailscale-user-name", in: request)
         ),
-        classification: classification.record(exchangeID: exchangeID)
+        classification: classification.record(exchangeID: exchangeID),
+        refinementInput: classification.requestBodyDisposition == .provisional
+          || classification.responseBodyDisposition == .provisional
+          ? RequestRefinementInput(
+            exchangeID: exchangeID,
+            method: facts.method,
+            path: facts.path,
+            queryNames: facts.queryNames.sorted(),
+            headers: refinementHeaders(request.headers),
+            heuristicCategory: classification.category,
+            heuristicRuleID: classification.ruleID,
+            heuristicTags: classification.tags
+          )
+          : nil
       )
     }
 
@@ -311,6 +328,14 @@ public struct MuxIngressResponder: HTTPResponder, Sendable {
   private func capturedHeaders(_ headers: HTTPFields) -> [CapturedHTTPHeader] {
     headers.map { header in
       capturedHeader(name: header.name.canonicalName, value: header.value)
+    }
+  }
+
+  private func refinementHeaders(_ headers: HTTPFields) -> [CapturedHTTPHeader] {
+    headers.compactMap { header in
+      let name = header.name.canonicalName
+      guard Self.refinementHeaderNames.contains(name) else { return nil }
+      return capturedHeader(name: name, value: header.value)
     }
   }
 

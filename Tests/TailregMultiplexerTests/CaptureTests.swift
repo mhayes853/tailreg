@@ -68,6 +68,7 @@ struct `MUX capture tests` {
     )
     let recorder = CaptureRecorder(
       database: database,
+      classificationRefiner: PreviewEchoRefiner(),
       batchSize: 100,
       flushInterval: .milliseconds(5)
     )
@@ -87,7 +88,18 @@ struct `MUX capture tests` {
       requestBodyDisposition: .retain,
       responseBodyDisposition: .retain
     )
-    recorder.open(exchange, classification: classification)
+    recorder.open(
+      exchange,
+      classification: classification,
+      refinementInput: RequestRefinementInput(
+        exchangeID: exchange.id,
+        method: "POST",
+        path: "/route/endpoint",
+        heuristicCategory: .unknown,
+        heuristicRuleID: "request.unclassified",
+        heuristicTags: [.mutation]
+      )
+    )
     recorder.responseStarted(
       id: exchange.id,
       at: Date(),
@@ -115,14 +127,15 @@ struct `MUX capture tests` {
       )
     )
     recorder.complete(id: exchange.id, at: Date(), outcome: .complete)
-    await recorder.flush()
+    await recorder.finish()
 
     let stored = try await database.read { db in
       let exchange = try HTTPExchangeRecord.fetchOne(db)
       return (
         try #require(exchange),
         try HTTPExchangeBodyRecord.fetchAll(db),
-        try HTTPExchangeClassificationRecord.fetchOne(db)
+        try HTTPExchangeClassificationRecord.fetchOne(db),
+        try HTTPExchangeClassificationRefinementRecord.fetchOne(db)
       )
     }
     #expect(stored.0.statusCode == 201)
@@ -131,8 +144,10 @@ struct `MUX capture tests` {
     #expect(stored.0.outcome == .complete)
     #expect(stored.1.count == 2)
     #expect(stored.2 == classification)
-
-    await recorder.finish()
+    #expect(stored.3?.classifierID == "stub")
+    #expect(stored.3?.usefulness == .useful)
+    #expect(stored.3?.tags == [.mutation, .structuredBody])
+    #expect(stored.3?.explanation == "hello")
   }
 
   @Test
@@ -178,5 +193,19 @@ struct `MUX capture tests` {
     #expect(stored?.failure == "mux_restarted")
     #expect(stored?.completedAt != nil)
     await recorder.finish()
+  }
+}
+
+private struct PreviewEchoRefiner: RequestClassificationRefining {
+  let classifierID = "stub"
+  let classifierVersion = "1"
+
+  func refine(_ input: RequestRefinementInput) async throws -> RequestRefinement {
+    RequestRefinement(
+      usefulness: .useful,
+      category: .api,
+      tags: [.mutation, .structuredBody],
+      explanation: input.bodyPreview
+    )
   }
 }

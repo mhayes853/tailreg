@@ -189,12 +189,21 @@ struct `HTTP capture schema tests` {
       requestBodyDisposition: .discard,
       responseBodyDisposition: .provisional
     )
+    let refinement = HTTPExchangeClassificationRefinementRecord(
+      exchangeID: exchange.id,
+      classifierID: "needle2",
+      classifierVersion: "2.0.3",
+      usefulness: .uncertain,
+      category: .document,
+      durationMilliseconds: 1
+    )
 
     try await database.write { db in
       try MuxRouteRecord.insert { route }.execute(db)
       try HTTPExchangeRecord.insert { exchange }.execute(db)
       try HTTPExchangeBodyRecord.insert { body }.execute(db)
       try HTTPExchangeClassificationRecord.insert { classification }.execute(db)
+      try HTTPExchangeClassificationRefinementRecord.insert { refinement }.execute(db)
       try MuxRouteRecord.where { $0.id.eq(route.id) }.delete().execute(db)
     }
 
@@ -202,12 +211,14 @@ struct `HTTP capture schema tests` {
       (
         try HTTPExchangeRecord.fetchCount(db),
         try HTTPExchangeBodyRecord.fetchCount(db),
-        try HTTPExchangeClassificationRecord.fetchCount(db)
+        try HTTPExchangeClassificationRecord.fetchCount(db),
+        try HTTPExchangeClassificationRefinementRecord.fetchCount(db)
       )
     }
     #expect(counts.0 == 0)
     #expect(counts.1 == 0)
     #expect(counts.2 == 0)
+    #expect(counts.3 == 0)
   }
 
   @Test

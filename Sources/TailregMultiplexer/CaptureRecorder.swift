@@ -27,6 +27,7 @@ public final class CaptureRecorder: Sendable {
   private struct OpenedEvent: Sendable {
     let record: HTTPExchangeRecord
     let classification: HTTPExchangeClassificationRecord?
+    let refinementInput: RequestRefinementInput?
   }
 
   private struct ResponseStartedEvent {
@@ -76,16 +77,56 @@ public final class CaptureRecorder: Sendable {
 
   private let continuation: AsyncStream<Event>.Continuation
   private let worker: Task<Void, Never>
+  private let refinementContinuation: AsyncStream<RequestRefinementInput>.Continuation?
+  private let refinementWorker: Task<Void, Never>?
 
   public init(
     database: any DatabaseWriter,
+    classificationRefiner: (any RequestClassificationRefining)? = nil,
     batchSize: Int = 200,
     flushInterval: Duration = .milliseconds(250),
     onError: @escaping @Sendable (any Error) -> Void = { _ in }
   ) {
+    let refinementPipeline = classificationRefiner.map { refiner in
+      let (inputs, continuation) = AsyncStream.makeStream(of: RequestRefinementInput.self)
+      let worker = Task {
+        for await input in inputs {
+          let startedAt = ContinuousClock.now
+          let record: HTTPExchangeClassificationRefinementRecord
+          do {
+            record = Self.refinementRecord(
+              input: input,
+              refiner: refiner,
+              refinement: try await refiner.refine(input),
+              duration: startedAt.duration(to: .now)
+            )
+          } catch {
+            onError(error)
+            record = Self.refinementRecord(
+              input: input,
+              refiner: refiner,
+              failure: error,
+              duration: startedAt.duration(to: .now)
+            )
+          }
+          do {
+            try await database.write { db in
+              try HTTPExchangeClassificationRefinementRecord.insert { record }.execute(db)
+            }
+          } catch {
+            onError(error)
+          }
+        }
+      }
+      return (continuation, worker)
+    }
+    self.refinementContinuation = refinementPipeline?.0
+    self.refinementWorker = refinementPipeline?.1
+
     let (events, continuation) = AsyncStream.makeStream(of: Event.self)
     self.continuation = continuation
     self.worker = Task {
+      var pendingRefinements: [UUIDV7: RequestRefinementInput] = [:]
       let batches = events.chunks(
         ofCount: batchSize,
         or: AsyncTimerSequence(interval: flushInterval, clock: ContinuousClock())
@@ -99,7 +140,27 @@ public final class CaptureRecorder: Sendable {
           onError(error)
         }
         for event in batch {
-          if case .flush(let waiter) = event { waiter.resume() }
+          switch event {
+          case .opened(let opened):
+            if refinementPipeline != nil, let input = opened.refinementInput {
+              pendingRefinements[opened.record.id] = input
+            }
+          case .body(let body):
+            guard body.direction == .request, var input = pendingRefinements[body.exchangeID]
+            else { continue }
+            input.bodyByteCount = body.observedByteCount
+            input.bodyPreview = Self.bodyPreview(body)
+            pendingRefinements[body.exchangeID] = input
+          case .completed(let id, _, _, _):
+            guard let input = pendingRefinements.removeValue(forKey: id) else { continue }
+            refinementPipeline?.0.yield(input)
+          case .abandon:
+            pendingRefinements.removeAll()
+          case .flush(let waiter):
+            waiter.resume()
+          case .responseStarted:
+            break
+          }
         }
       }
     }
@@ -108,9 +169,15 @@ public final class CaptureRecorder: Sendable {
 
   public func open(
     _ record: HTTPExchangeRecord,
-    classification: HTTPExchangeClassificationRecord? = nil
+    classification: HTTPExchangeClassificationRecord? = nil,
+    refinementInput: RequestRefinementInput? = nil
   ) {
-    continuation.yield(.opened(OpenedEvent(record: record, classification: classification)))
+    let event = OpenedEvent(
+      record: record,
+      classification: classification,
+      refinementInput: refinementInput
+    )
+    continuation.yield(.opened(event))
   }
 
   public func responseStarted(
@@ -146,6 +213,36 @@ public final class CaptureRecorder: Sendable {
   public func finish() async {
     continuation.finish()
     await worker.value
+    refinementContinuation?.finish()
+    await refinementWorker?.value
+  }
+
+  private static func refinementRecord(
+    input: RequestRefinementInput,
+    refiner: any RequestClassificationRefining,
+    refinement: RequestRefinement? = nil,
+    failure: (any Error)? = nil,
+    duration: Duration
+  ) -> HTTPExchangeClassificationRefinementRecord {
+    HTTPExchangeClassificationRefinementRecord(
+      exchangeID: input.exchangeID,
+      classifierID: refiner.classifierID,
+      classifierVersion: refiner.classifierVersion,
+      usefulness: refinement?.usefulness,
+      category: refinement?.category,
+      tags: refinement?.tags ?? [],
+      durationMilliseconds: max(0, Int(duration / .milliseconds(1))),
+      explanation: refinement?.explanation,
+      failure: failure.map { String(String(describing: $0).prefix(1_000)) }
+    )
+  }
+
+  private static func bodyPreview(_ body: HTTPExchangeBodyRecord) -> String? {
+    guard let content = body.content, let type = body.contentType?.lowercased(),
+      ["text/", "json", "xml", "graphql", "x-www-form-urlencoded"]
+        .contains(where: type.contains)
+    else { return nil }
+    return String(decoding: content.prefix(4_096), as: UTF8.self)
   }
 
   private static func apply(_ events: [Event], in db: Database) throws {

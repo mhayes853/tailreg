@@ -1,5 +1,5 @@
 {
-  "originHash" : "ca82af75409c34fbf92230da88bba229481c672dc77381880b54b4a5d521f45a",
+  "originHash" : "4ec57b2eddc12566e4e6c3c6b77a0a6770aa975ef0e193472651fda073fe640c",
   "pins" : [
     {
       "identity" : "async-http-client",
@@ -35,6 +35,15 @@
       "state" : {
         "revision" : "55bc9025a4825ee2a234b1f82b51b87be6ef74e4",
         "version" : "2.26.0"
+      }
+    },
+    {
+      "identity" : "javascriptkit",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/swiftwasm/JavaScriptKit",
+      "state" : {
+        "revision" : "cadafdcf9a1946ed60dfd22407e7e8dd189920e8",
+        "version" : "0.58.0"
       }
     },
     {
@@ -170,6 +179,14 @@
       "state" : {
         "revision" : "dc4030184203ffafbb2ec614352487235d747fe0",
         "version" : "1.4.1"
+      }
+    },
+    {
+      "identity" : "swift-edge-tools",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/mhayes853/swift-edge-tools.git",
+      "state" : {
+        "revision" : "f58742623895a98bf920047035800b496678d41d"
       }
     },
     {
@@ -330,8 +347,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/swiftlang/swift-syntax",
       "state" : {
-        "revision" : "79e4b74a295b6eb74a8b585e3a39d29e70c1dbd1",
-        "version" : "603.0.2"
+        "revision" : "4799286537280063c85a32f09884cfbca301b1a1",
+        "version" : "602.0.0"
       }
     },
     {
@@ -359,6 +376,14 @@
       "state" : {
         "revision" : "7bbd97af585672a3dcdf6575ad37b339ad41b579",
         "version" : "1.13.0"
+      }
+    },
+    {
+      "identity" : "yyjson",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/ibireme/yyjson.git",
+      "state" : {
+        "revision" : "de3700ab1778e236a8a571058463b6a5888cf262"
       }
     }
   ],

@@ -7,6 +7,13 @@ public struct RequestTag: OptionSet, Codable, Hashable, Sendable {
     self.rawValue = rawValue
   }
 
+  public init?(name: String) {
+    guard let tag = Self.namedTags.first(where: { $0.1 == name.lowercased() })?.0 else {
+      return nil
+    }
+    self = tag
+  }
+
   // Browser and request shape. Persisted bit positions must never be reused.
   public static let document = Self(rawValue: Int64(1) << 0)
   public static let fetchLike = Self(rawValue: Int64(1) << 1)
@@ -53,6 +60,8 @@ public struct RequestTag: OptionSet, Codable, Hashable, Sendable {
       contains(tag) ? name : nil
     }
   }
+
+  public static var allNames: [String] { namedTags.map(\.1) }
 
   private static let namedTags: [(Self, String)] = [
     (.document, "document"),

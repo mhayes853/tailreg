@@ -249,6 +249,48 @@ public struct HTTPExchangeClassificationRecord: Hashable, Sendable {
   }
 }
 
+@Table("httpExchangeClassificationRefinements")
+public struct HTTPExchangeClassificationRefinementRecord: Hashable, Sendable {
+  public let id: UUIDV7
+  public var exchangeID: UUIDV7
+  public var classifierID: String
+  public var classifierVersion: String
+  public var usefulness: RequestUsefulness?
+  public var category: HTTPExchangeClassificationCategory?
+  @Column(as: RequestTag.RawRepresentation.self)
+  public var tags: RequestTag
+  public var durationMilliseconds: Int
+  public var explanation: String?
+  public var createdAt: Date
+  public var failure: String?
+
+  public init(
+    id: UUIDV7 = UUIDV7(),
+    exchangeID: UUIDV7,
+    classifierID: String,
+    classifierVersion: String,
+    usefulness: RequestUsefulness? = nil,
+    category: HTTPExchangeClassificationCategory? = nil,
+    tags: RequestTag = [],
+    durationMilliseconds: Int,
+    explanation: String? = nil,
+    createdAt: Date = Date(),
+    failure: String? = nil
+  ) {
+    self.id = id
+    self.exchangeID = exchangeID
+    self.classifierID = classifierID
+    self.classifierVersion = classifierVersion
+    self.usefulness = usefulness
+    self.category = category
+    self.tags = tags
+    self.durationMilliseconds = durationMilliseconds
+    self.explanation = explanation
+    self.createdAt = createdAt
+    self.failure = failure
+  }
+}
+
 public func tailregDatabaseConfiguration() -> Configuration {
   var configuration = Configuration()
   configuration.busyMode = .timeout(5)
@@ -476,6 +518,60 @@ public func tailregDatabaseMigrator() -> DatabaseMigrator {
       """
       CREATE INDEX "httpExchangeClassifications_category"
         ON "httpExchangeClassifications" ("category", "exchangeID" DESC)
+      """
+    )
+    .execute(db)
+  }
+
+  migrator.registerMigration("v4: refine HTTP exchange classifications") { db in
+    try #sql(
+      """
+      CREATE TABLE "httpExchangeClassificationRefinements" (
+        "id"                   TEXT    NOT NULL PRIMARY KEY,
+        "exchangeID"           TEXT    NOT NULL
+          REFERENCES "httpExchanges"("id") ON DELETE CASCADE,
+        "classifierID"         TEXT    NOT NULL,
+        "classifierVersion"    TEXT    NOT NULL,
+        "usefulness"           TEXT,
+        "category"             TEXT,
+        "tags"                 INTEGER NOT NULL,
+        "durationMilliseconds" INTEGER NOT NULL,
+        "explanation"          TEXT,
+        "createdAt"            TEXT    NOT NULL,
+        "failure"              TEXT,
+
+        CHECK ("classifierID" <> ''),
+        CHECK ("classifierVersion" <> ''),
+        CHECK ("usefulness" IS NULL OR "usefulness" IN ('useful', 'not-useful', 'uncertain')),
+        CHECK (
+          "category" IS NULL OR "category" IN (
+            'api', 'framework-data', 'document', 'asset',
+            'dev-runtime', 'telemetry', 'stream', 'unknown'
+          )
+        ),
+        CHECK ("tags" >= 0),
+        CHECK ("durationMilliseconds" >= 0),
+        CHECK (("failure" IS NULL) = ("usefulness" IS NOT NULL)),
+        CHECK (("failure" IS NULL) = ("category" IS NOT NULL))
+      ) STRICT
+      """
+    )
+    .execute(db)
+
+    try #sql(
+      """
+      CREATE INDEX "httpExchangeClassificationRefinements_exchange"
+        ON "httpExchangeClassificationRefinements" ("exchangeID", "id")
+      """
+    )
+    .execute(db)
+
+    try #sql(
+      """
+      CREATE INDEX "httpExchangeClassificationRefinements_classifier"
+        ON "httpExchangeClassificationRefinements" (
+          "classifierID", "classifierVersion", "id"
+        )
       """
     )
     .execute(db)

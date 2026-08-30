@@ -5,7 +5,7 @@ import PackageDescription
 let package = Package(
     name: "Tailreg",
     platforms: [
-        .macOS(.v14)
+        .macOS(.v26)
     ],
     products: [
         .library(
@@ -19,6 +19,10 @@ let package = Package(
         .library(
             name: "TailregMultiplexer",
             targets: ["TailregMultiplexer"]
+        ),
+        .library(
+            name: "TailregIntelligence",
+            targets: ["TailregIntelligence"]
         )
     ],
     dependencies: [
@@ -46,6 +50,11 @@ let package = Package(
         .package(
             url: "https://github.com/pointfreeco/swift-clocks",
             from: "1.1.0"
+        ),
+        .package(
+            url: "https://github.com/mhayes853/swift-edge-tools.git",
+            revision: "f58742623895a98bf920047035800b496678d41d",
+            traits: ["Needle2"]
         )
     ],
     targets: [
@@ -71,6 +80,13 @@ let package = Package(
                 .product(name: "AsyncAlgorithms", package: "swift-async-algorithms"),
                 .product(name: "AsyncHTTPClient", package: "async-http-client"),
                 .product(name: "Hummingbird", package: "hummingbird")
+            ]
+        ),
+        .target(
+            name: "TailregIntelligence",
+            dependencies: [
+                "TailregCore",
+                .product(name: "EdgeTools", package: "swift-edge-tools")
             ]
         ),
         .executableTarget(
