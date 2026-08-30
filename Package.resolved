@@ -1,5 +1,5 @@
 {
-  "originHash" : "4ec57b2eddc12566e4e6c3c6b77a0a6770aa975ef0e193472651fda073fe640c",
+  "originHash" : "90b4e9270d1f277e7daa30728782e96acf16f866f69324edb1624b70a3a54910",
   "pins" : [
     {
       "identity" : "async-http-client",
@@ -186,7 +186,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/mhayes853/swift-edge-tools.git",
       "state" : {
-        "revision" : "f58742623895a98bf920047035800b496678d41d"
+        "revision" : "8a866e2e4dda952d9989d17e409d511d2a7a2f21"
       }
     },
     {

@@ -53,7 +53,7 @@ let package = Package(
         ),
         .package(
             url: "https://github.com/mhayes853/swift-edge-tools.git",
-            revision: "f58742623895a98bf920047035800b496678d41d",
+            revision: "8a866e2e4dda952d9989d17e409d511d2a7a2f21",
             traits: ["Needle2"]
         )
     ],
