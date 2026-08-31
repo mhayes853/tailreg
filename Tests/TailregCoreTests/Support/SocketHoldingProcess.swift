@@ -13,11 +13,17 @@ import TailregCore
 /// so the port is attributable to the child alone. That is what separates a locator that walks
 /// other processes from one that only ever inspects itself.
 final class SocketHoldingProcess {
+  enum Output {
+    case nullDevice
+    case pipe
+  }
+
   let port: PortNumber
   let pid: Int32
   private let process: Process
+  private let pipes: (standardOutput: Pipe, standardError: Pipe)?
 
-  init() throws {
+  init(output: Output = .nullDevice) throws {
     let listener = try LoopbackListener()
     port = listener.port
 
@@ -28,8 +34,18 @@ final class SocketHoldingProcess {
       fileDescriptor: listener.descriptor,
       closeOnDealloc: false
     )
-    process.standardOutput = FileHandle.nullDevice
-    process.standardError = FileHandle.nullDevice
+    switch output {
+    case .nullDevice:
+      process.standardOutput = FileHandle.nullDevice
+      process.standardError = FileHandle.nullDevice
+      pipes = nil
+    case .pipe:
+      let standardOutput = Pipe()
+      let standardError = Pipe()
+      process.standardOutput = standardOutput
+      process.standardError = standardError
+      pipes = (standardOutput, standardError)
+    }
     try process.run()
 
     // The child's descriptor table was copied at spawn, so the parent's copy is now redundant.
