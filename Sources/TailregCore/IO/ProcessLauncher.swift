@@ -1,5 +1,6 @@
 import Dispatch
 import Foundation
+import Synchronization
 
 #if canImport(Glibc)
   import Glibc
@@ -32,7 +33,7 @@ public protocol ProcessLaunching: Sendable {
 ///
 /// Output readers are installed before this value is returned, so a caller does not need to start
 /// iterating its streams immediately to prevent a child from blocking on a full OS pipe.
-public final class LaunchedProcess: @unchecked Sendable {
+public final class LaunchedProcess: Sendable {
   public let pid: Int32
   public let standardOutput: AsyncStream<LogLine>
   public let standardError: AsyncStream<LogLine>
@@ -60,7 +61,7 @@ public final class LaunchedProcess: @unchecked Sendable {
   /// This intentionally does not attempt to signal a process tree. Process-group supervision is
   /// a higher-level policy and is not implied by this generic launcher.
   public func terminate() {
-    state.forceTerminate()
+    state.forceTerminate(pid: pid)
   }
 }
 
@@ -134,23 +135,26 @@ public struct SystemProcessLauncher: ProcessLaunching {
   }
 }
 
-private final class ProcessLaunchState: @unchecked Sendable {
-  private let process: Process
-  private let lock = NSLock()
-  private var exit: ProcessExit?
-  private var waiters: [CheckedContinuation<ProcessExit, Never>] = []
+private final class ProcessLaunchState: Sendable {
+  private struct Storage: Sendable {
+    var exit: ProcessExit?
+    var waiters: [CheckedContinuation<ProcessExit, Never>] = []
+  }
+
+  private let process: Mutex<Process>
+  private let storage = Mutex(Storage())
 
   init(process: Process) {
-    self.process = process
+    self.process = Mutex(process)
   }
 
   func waitForExit() async -> ProcessExit {
     await withCheckedContinuation { continuation in
-      lock.withLock {
-        if let exit {
+      storage.withLock { storage in
+        if let exit = storage.exit {
           continuation.resume(returning: exit)
         } else {
-          waiters.append(continuation)
+          storage.waiters.append(continuation)
         }
       }
     }
@@ -158,32 +162,29 @@ private final class ProcessLaunchState: @unchecked Sendable {
 
   func beginWaiting() {
     processLifecycleQueue.async { [self] in
-      process.waitUntilExit()
-      recordExit(
-        ProcessExit(
-          code: process.terminationStatus,
-          wasTerminatedBySignal: process.terminationReason == .uncaughtSignal
+      let exit = process.withLock {
+        $0.waitUntilExit()
+        return ProcessExit(
+          code: $0.terminationStatus,
+          wasTerminatedBySignal: $0.terminationReason == .uncaughtSignal
         )
-      )
+      }
+      let waiters = storage.withLock { storage -> [CheckedContinuation<ProcessExit, Never>] in
+        guard storage.exit == nil else { return [] }
+        storage.exit = exit
+        defer { storage.waiters.removeAll() }
+        return storage.waiters
+      }
+      for waiter in waiters {
+        waiter.resume(returning: exit)
+      }
     }
   }
 
-  func recordExit(_ exit: ProcessExit) {
-    let waiters = lock.withLock { () -> [CheckedContinuation<ProcessExit, Never>] in
-      guard self.exit == nil else { return [] }
-      self.exit = exit
-      defer { self.waiters.removeAll() }
-      return self.waiters
-    }
-    for waiter in waiters {
-      waiter.resume(returning: exit)
-    }
-  }
-
-  func forceTerminate() {
-    lock.withLock {
-      guard exit == nil else { return }
-      _ = kill(process.processIdentifier, SIGKILL)
+  func forceTerminate(pid: Int32) {
+    let exited = storage.withLock { $0.exit != nil }
+    if !exited {
+      _ = kill(pid, SIGKILL)
     }
   }
 }

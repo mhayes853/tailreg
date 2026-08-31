@@ -43,7 +43,7 @@ public enum CommandLineParseError: Error, Sendable, Equatable {
 }
 
 enum CommandLineParser {
-  private enum State {
+  private enum State: Equatable {
     case unquoted
     case singleQuoted
     case doubleQuoted
@@ -54,8 +54,7 @@ enum CommandLineParser {
     var word = ""
     var wordStarted = false
     var state = State.unquoted
-    let characters = Array(commandLine)
-    var index = 0
+    var characters = commandLine.makeIterator()
 
     func finishWord() throws {
       guard wordStarted else { return }
@@ -67,10 +66,7 @@ enum CommandLineParser {
       wordStarted = false
     }
 
-    while index < characters.count {
-      let character = characters[index]
-      index += 1
-
+    while let character = characters.next() {
       if character == "\0" {
         throw CommandLineParseError.nulByte
       }
@@ -80,40 +76,32 @@ enum CommandLineParser {
 
       switch state {
       case .unquoted:
-        if character.isWhitespace {
+        switch character {
+        case _ where character.isWhitespace:
           try finishWord()
-        } else if character == "'" {
+        case "'", "\"":
           wordStarted = true
-          state = .singleQuoted
-        } else if character == "\"" {
+          state = character == "'" ? .singleQuoted : .doubleQuoted
+        case "\\":
+          guard let escaped = characters.next() else { throw CommandLineParseError.trailingEscape }
           wordStarted = true
-          state = .doubleQuoted
-        } else if character == "\\" {
-          guard index < characters.count else { throw CommandLineParseError.trailingEscape }
-          wordStarted = true
-          word.append(characters[index])
-          index += 1
-        } else if isUnsupportedShellSyntax(character) {
+          word.append(escaped)
+        case _ where isUnsupportedShellSyntax(character):
           throw CommandLineParseError.unsupportedShellSyntax(character)
-        } else {
+        default:
           wordStarted = true
           word.append(character)
         }
 
       case .singleQuoted:
-        if character == "'" {
-          state = .unquoted
-        } else {
-          word.append(character)
-        }
+        if character == "'" { state = .unquoted } else { word.append(character) }
 
       case .doubleQuoted:
         if character == "\"" {
           state = .unquoted
         } else if character == "\\" {
-          guard index < characters.count else { throw CommandLineParseError.trailingEscape }
-          word.append(characters[index])
-          index += 1
+          guard let escaped = characters.next() else { throw CommandLineParseError.trailingEscape }
+          word.append(escaped)
         } else if character == "$" || character == "`" {
           throw CommandLineParseError.unsupportedShellSyntax(character)
         } else {
