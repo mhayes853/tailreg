@@ -6,29 +6,15 @@ import Dispatch
   import Darwin
 #endif
 
-// MARK: - Protocol
-
-public protocol PortProbe: Sendable {
-  func isListening(host: String, port: Int) async -> Bool
-}
-
-extension PortProbe {
-  public func isListening(port: Int) async -> Bool {
-    await isListening(host: "127.0.0.1", port: port)
-  }
-}
-
-// MARK: - System implementation
-
 private let portProbeQueue = DispatchQueue(
-  label: "com.tailreg.io.portprobe",
+  label: "com.tailreg.ports.portprobe",
   attributes: .concurrent
 )
 
 public struct SystemPortProbe: PortProbe {
   public init() {}
 
-  public func isListening(host: String, port: Int) async -> Bool {
+  public func isListening(host: String, port: PortNumber) async -> Bool {
     await withCheckedContinuation { continuation in
       portProbeQueue.async {
         continuation.resume(returning: Self.connectSucceeds(host: host, port: port))
@@ -36,9 +22,7 @@ public struct SystemPortProbe: PortProbe {
     }
   }
 
-  private static func connectSucceeds(host: String, port: Int) -> Bool {
-    guard port > 0, port <= 65535 else { return false }
-
+  private static func connectSucceeds(host: String, port: PortNumber) -> Bool {
     var hints = addrinfo()
     hints.ai_family = AF_UNSPEC
     #if canImport(Glibc)
@@ -48,7 +32,7 @@ public struct SystemPortProbe: PortProbe {
     #endif
 
     var resolved: UnsafeMutablePointer<addrinfo>?
-    guard getaddrinfo(host, String(port), &hints, &resolved) == 0, let head = resolved else {
+    guard getaddrinfo(host, port.description, &hints, &resolved) == 0, let head = resolved else {
       return false
     }
     defer { freeaddrinfo(resolved) }

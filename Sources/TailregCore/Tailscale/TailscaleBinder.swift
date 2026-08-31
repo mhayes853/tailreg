@@ -112,7 +112,7 @@ public actor TailscaleBinder {
   ) async throws -> TailscaleBinding {
     let status = try await requireRunning()
 
-    guard await portProbe.isListening(port: localPort) else {
+    guard let probePort = PortNumber(localPort), await portProbe.isListening(port: probePort) else {
       throw TailscaleError.noLocalServerListening(port: localPort)
     }
 
