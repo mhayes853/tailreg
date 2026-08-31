@@ -361,3 +361,14 @@ everything including TLS plaintext but are Linux-only, root-only, and brittle.
 The intended composition is the proxy as the portable spine, with a request ID
 stamped into the upstream request so process-side signals - including existing
 stdout `LogRecord` lines - can be joined back to the proxied exchange.
+
+**Process log attachment.** Discovering the listener PID is useful for
+best-effort diagnostics, but it cannot generally recover an already-running
+process's stdout or stderr: output inherited by a terminal or pipe has no
+passive second-reader interface. Tailreg may attach only to an independently
+readable source, such as a regular file used for stdout/stderr redirection, and
+must surface why other descriptors are unavailable rather than claiming to
+capture them. We will likely also need a managed process-launching mode: when
+tailreg starts the command itself, it can retain the stdout and stderr pipe
+ends from the outset and provide dependable live logs. That is a future
+workflow, not a prerequisite for the external-process attachment path.
