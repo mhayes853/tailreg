@@ -8,16 +8,6 @@ import UUIDV7
 public struct MuxIngressResponder: HTTPResponder, Sendable {
   public typealias Context = BasicRequestContext
 
-  private typealias ResolvedRoute = (
-    binding: MultiplexerBinding,
-    upstreamPath: String,
-    isExplicit: Bool
-  )
-
-  private static let hopByHopHeaders: Set<String> = [
-    "connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer",
-    "transfer-encoding", "upgrade"
-  ]
   private static let refinementHeaderNames: Set<String> = [
     "accept", "content-type", "hx-request", "next-action", "next-router-prefetch",
     "next-router-segment-prefetch", "purpose", "rsc", "sec-fetch-dest", "sec-fetch-mode",
@@ -27,10 +17,10 @@ public struct MuxIngressResponder: HTTPResponder, Sendable {
     case invalidURL
   }
 
-  private let registry: BindingRegistry
   private let cookieName: String
   private let secureCookies: Bool
-  private let capturedHeaderPolicy: CapturedHeaderPolicy
+  private let routeResolver: MuxRouteResolver
+  private let headerPolicy: MuxHeaderPolicy
   private let captureRecorder: CaptureRecorder?
 
   public init(
@@ -40,10 +30,14 @@ public struct MuxIngressResponder: HTTPResponder, Sendable {
     capturedHeaderPolicy: CapturedHeaderPolicy = .redactSensitiveValues,
     captureRecorder: CaptureRecorder? = nil
   ) {
-    self.registry = registry
     self.cookieName = cookieName
     self.secureCookies = secureCookies
-    self.capturedHeaderPolicy = capturedHeaderPolicy
+    self.routeResolver = MuxRouteResolver(registry: registry, cookieName: cookieName)
+    self.headerPolicy = MuxHeaderPolicy(
+      cookieName: cookieName,
+      secureCookies: secureCookies,
+      capturedHeaderPolicy: capturedHeaderPolicy
+    )
     self.captureRecorder = captureRecorder
   }
 
@@ -56,7 +50,7 @@ public struct MuxIngressResponder: HTTPResponder, Sendable {
         context: context
       )
     }
-    guard let resolved = await resolve(request) else {
+    guard let resolved = await routeResolver.resolve(request) else {
       return try response(
         MultiplexerErrorResponse(
           error: "route_not_resolved",
@@ -105,7 +99,7 @@ public struct MuxIngressResponder: HTTPResponder, Sendable {
     }
   }
 
-  private func proxy(_ request: Request, to resolved: ResolvedRoute) async throws -> Response {
+  private func proxy(_ request: Request, to resolved: ResolvedMuxRoute) async throws -> Response {
     guard resolved.upstreamPath.removingPercentEncoding != nil,
       request.uri.query?.removingPercentEncoding != nil || request.uri.query == nil,
       var components = URLComponents(
@@ -124,7 +118,7 @@ public struct MuxIngressResponder: HTTPResponder, Sendable {
 
     var upstreamRequest = HTTPClientRequest(url: upstreamURL.absoluteString)
     upstreamRequest.method = .RAW(value: request.method.rawValue)
-    copyRequestHeaders(from: request, to: &upstreamRequest, route: resolved.binding.route)
+    headerPolicy.copyRequestHeaders(from: request, to: &upstreamRequest, route: resolved.binding.route)
 
     let exchangeID = captureRecorder.map { _ in UUIDV7() }
     if let captureRecorder, let exchangeID {
@@ -145,11 +139,11 @@ public struct MuxIngressResponder: HTTPResponder, Sendable {
           path: request.uri.path,
           query: request.uri.query,
           requestHeaders: upstreamRequest.headers.map { header in
-            capturedHeader(name: header.name.lowercased(), value: header.value)
+            headerPolicy.capturedHeader(name: header.name.lowercased(), value: header.value)
           },
           startedAt: Date(),
-          tailscaleUserLogin: requestHeader("tailscale-user-login", in: request),
-          tailscaleUserName: requestHeader("tailscale-user-name", in: request)
+          tailscaleUserLogin: headerPolicy.requestHeader("tailscale-user-login", in: request),
+          tailscaleUserName: headerPolicy.requestHeader("tailscale-user-name", in: request)
         ),
         classification: classification.record(exchangeID: exchangeID),
         refinementInput: classification.requestBodyDisposition == .provisional
@@ -210,14 +204,14 @@ public struct MuxIngressResponder: HTTPResponder, Sendable {
       }
       throw error
     }
-    let headers = responseHeaders(from: upstreamResponse)
+    let headers = headerPolicy.responseHeaders(from: upstreamResponse)
     let status = HTTPResponse.Status(code: Int(upstreamResponse.status.code))
     if let captureRecorder, let exchangeID {
       captureRecorder.responseStarted(
         id: exchangeID,
         at: Date(),
         statusCode: Int(status.code),
-        headers: capturedHeaders(headers)
+        headers: headerPolicy.capturedHeaders(headers)
       )
     }
 
@@ -325,90 +319,12 @@ public struct MuxIngressResponder: HTTPResponder, Sendable {
     )
   }
 
-  private func capturedHeaders(_ headers: HTTPFields) -> [CapturedHTTPHeader] {
-    headers.map { header in
-      capturedHeader(name: header.name.canonicalName, value: header.value)
-    }
-  }
-
   private func refinementHeaders(_ headers: HTTPFields) -> [CapturedHTTPHeader] {
     headers.compactMap { header in
       let name = header.name.canonicalName
       guard Self.refinementHeaderNames.contains(name) else { return nil }
-      return capturedHeader(name: name, value: header.value)
+      return headerPolicy.capturedHeader(name: name, value: header.value)
     }
-  }
-
-  private func capturedHeader(name: String, value: String) -> CapturedHTTPHeader {
-    capturedHeaderPolicy.capture(name: name, value: value)
-  }
-
-  private func requestHeader(_ name: String, in request: Request) -> String? {
-    request.headers.first { $0.name.canonicalName == name }?.value
-  }
-
-  private func copyRequestHeaders(
-    from request: Request,
-    to upstreamRequest: inout HTTPClientRequest,
-    route: String
-  ) {
-    let connectionHeaders = connectionTokens(request.headers[values: .connection])
-    for field in request.headers {
-      let name = field.name.canonicalName
-      guard !Self.hopByHopHeaders.contains(name), !connectionHeaders.contains(name), name != "host"
-      else { continue }
-
-      if name == "cookie" {
-        let value = removingRoutingCookie(from: field.value)
-        if !value.isEmpty { upstreamRequest.headers.add(name: field.name.rawName, value: value) }
-      } else {
-        upstreamRequest.headers.add(name: field.name.rawName, value: field.value)
-      }
-    }
-
-    if let host = request.head.authority {
-      upstreamRequest.headers.add(name: "X-Forwarded-Host", value: host)
-    }
-    upstreamRequest.headers.add(name: "X-Forwarded-Proto", value: secureCookies ? "https" : "http")
-    upstreamRequest.headers.add(name: "X-Forwarded-Prefix", value: "/\(route)")
-  }
-
-  private func responseHeaders(from response: HTTPClientResponse) -> HTTPFields {
-    let connectionHeaders = connectionTokens(response.headers["connection"])
-    // HTTPClient.shared decodes these bodies but preserves the upstream metadata.
-    let bodyWasDecoded = response.headers["content-encoding"]
-      .contains {
-        $0.lowercased() == "gzip" || $0.lowercased() == "deflate"
-      }
-    var headers = HTTPFields()
-    for header in response.headers {
-      let name = header.name.lowercased()
-      guard !Self.hopByHopHeaders.contains(name), !connectionHeaders.contains(name) else {
-        continue
-      }
-      if bodyWasDecoded && (name == "content-encoding" || name == "content-length") { continue }
-      if name == "set-cookie" && header.value.lowercased().hasPrefix("\(cookieName.lowercased())=")
-      {
-        continue
-      }
-      guard let fieldName = HTTPField.Name(header.name) else { continue }
-      headers.append(HTTPField(name: fieldName, value: header.value))
-    }
-    return headers
-  }
-
-  private func connectionTokens(_ values: [String]) -> Set<String> {
-    Set(
-      values.flatMap { value in
-        value.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
-      }
-    )
-  }
-
-  private func removingRoutingCookie(from value: String) -> String {
-    value.split(separator: ";").map { $0.trimmingCharacters(in: .whitespaces) }
-      .filter { !$0.lowercased().hasPrefix("\(cookieName.lowercased())=") }
-      .joined(separator: "; ")
   }
 
   private func join(basePath: String, forwardedPath: String) -> String {
@@ -417,26 +333,6 @@ public struct MuxIngressResponder: HTTPResponder, Sendable {
     let forwarded = forwardedPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
     let joined = [base, forwarded].filter { !$0.isEmpty }.joined(separator: "/")
     return "/\(joined)"
-  }
-
-  private func resolve(_ request: Request) async -> ResolvedRoute? {
-    let path = request.uri.path
-    if let route = firstSegment(path), let binding = await registry.binding(route: route) {
-      let remainder = path.dropFirst(route.count + 1)
-      return (binding, remainder.isEmpty ? "/" : String(remainder), true)
-    }
-
-    if let token = request.cookies[cookieName]?.value,
-      let binding = await registry.binding(token: token)
-    {
-      return (binding, path, false)
-    }
-
-    return nil
-  }
-
-  private func firstSegment(_ path: String) -> String? {
-    path.split(separator: "/", omittingEmptySubsequences: true).first.map { String($0) }
   }
 
   private func response<Body: ResponseEncodable>(

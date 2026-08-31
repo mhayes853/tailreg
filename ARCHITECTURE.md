@@ -1,8 +1,8 @@
 # Architecture: the multiplexing proxy
 
-**Status:** proposed. None of the multiplexer described here is implemented yet;
-this documents the design we intend to build and the reasoning behind the
-choices, so they don't have to be re-derived later.
+**Status:** current design, partially implemented. This document describes the
+topology and the intended long-term shape; implementation notes call out the
+parts that exist today and the parts that are still planned.
 
 ## Motivation
 
@@ -90,19 +90,23 @@ tailnet" and "can reconfigure the mux" are disjoint sets by construction.
    +------------------------------------------------------------+
 ```
 
-Target layout:
+Package target layout:
 
 | Target | Contains | Depends on |
 |---|---|---|
-| `TailregCore` | route + exchange models, queries, migrations, tailscale CLI | SQLiteData, UUIDV7, AsyncAlgorithms |
+| `TailregCore` | route + exchange models, queries, migrations, tailscale CLI, request classification/refinement | SQLiteData, UUIDV7, AsyncAlgorithms, EdgeTools |
 | `TailregMultiplexer` | listeners, proxy engine, transforms, capture, admin API | `TailregCore`, Hummingbird, AsyncHTTPClient |
-| `tailreg` (executable) | CLI plus a hidden `mux run` subcommand | both |
+| `TailregMultiplexerE2EFixture` | browser-test upstreams and capture inspection server | both multiplexer and Core APIs |
+| `tailreg` | planned CLI plus a hidden `mux run` subcommand | both |
 
 Records live in Core so the CLI can query captured traffic without linking
-Hummingbird. The Hummingbird dependency moves off the current `Tailreg` target,
-which declares it and does not use it. The package has no executable product
-today; one binary with a hidden subcommand beats two, because the CLI can then
-re-exec its own path rather than locating a sibling binary on `PATH`.
+Hummingbird. The CLI target is intentionally not present until there is real
+CLI behavior to expose; the current package does not ship an empty placeholder
+executable.
+
+The current implementation has one shared ingress listener and an optional
+status application. Per-route listener supervision and the admin control
+surface shown in the target design remain planned.
 
 **Cross-process change propagation** is the admin `POST`, because GRDB's
 observation is same-process only and SQLite has no cross-process notification
@@ -216,6 +220,21 @@ and SSE is unbounded.
 
 ## 5. Component decomposition
 
+The implemented source is organized into `Routing`, `Proxy`, and `Capture`
+areas inside `TailregMultiplexer`. `BindingRegistry` owns route state,
+`MuxRouteResolver` handles explicit paths and routing cookies, and
+`MuxHeaderPolicy` owns forwarding and capture-header rules. The responder
+coordinates the request lifecycle while `BodyCapture` and
+`CaptureRecorder` handle streamed capture.
+
+Request classification remains a cohesive policy in `RequestClassification.swift`;
+the model-backed refinement adapter lives under Core's `Intelligence` directory
+alongside the shared refinement protocol. Core owns the EdgeTools dependency so
+all consumers use the same refinement surface.
+
+The listener supervisor, path-transform, response-rewriter, and full admin API
+shown below are planned extensions rather than current types.
+
 ```
  TailregMultiplexer
  |- ListenerSupervisor   binds/unbinds ports, owns listener lifecycle
@@ -307,9 +326,10 @@ Two things make transparent mode practical rather than a documentation burden:
   topology there is nowhere for it to live: unregistered paths 404 at
   tailscaled and never reach the mux. Adding it would require a catch-all `/`
   mount, which re-introduces tailreg owning the node root.
-- **Request and response body capture.** Metadata plus redacted headers first;
-  bodies later, opt-in, size-capped, with `Authorization`/`Cookie`/
-  `Set-Cookie` redacted.
+
+Request and response body capture is implemented as a bounded prefix with the
+observed byte count recorded separately; sensitive headers remain redacted by
+default.
 
 ## 10. Open questions
 
