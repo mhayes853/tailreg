@@ -15,8 +15,14 @@ struct `External process log monitor tests` {
     let process = try await listenerProcess(for: fixture)
 
     let output = await process.output()
-    #expect(output.standardOutput.file?.url == fixture.standardOutputURL)
-    #expect(output.standardError.file?.url == fixture.standardErrorURL)
+    #expect(
+      output.standardOutput.file?.url.resolvingSymlinksInPath()
+        == fixture.standardOutputURL.resolvingSymlinksInPath()
+    )
+    #expect(
+      output.standardError.file?.url.resolvingSymlinksInPath()
+        == fixture.standardErrorURL.resolvingSymlinksInPath()
+    )
 
     let database = try openTailregDatabase(path: temp.path("tailreg.sqlite"), kind: .queue)
     let bindingID = try await binding(into: database)
