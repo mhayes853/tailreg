@@ -29,8 +29,10 @@
       guard proc_pidfdinfo(pid, descriptor, PROC_PIDFDVNODEPATHINFO, &pathInfo, size) == size else {
         return .unavailable(.inaccessible)
       }
-      let path = withUnsafePointer(to: &pathInfo.pvip.vip_path) {
-        $0.withMemoryRebound(to: CChar.self, capacity: MemoryLayout.size(ofValue: pathInfo.pvip.vip_path)) {
+      var rawPath = pathInfo.pvip.vip_path
+      let capacity = MemoryLayout.size(ofValue: rawPath)
+      let path = withUnsafePointer(to: &rawPath) {
+        $0.withMemoryRebound(to: CChar.self, capacity: capacity) {
           String(cString: $0)
         }
       }
