@@ -25,6 +25,11 @@ jobs:
         run: |
           echo "nproc: $(nproc 2>/dev/null || sysctl -n hw.ncpu)"
           uname -a
+      - name: Install Linux libc++
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libc++-dev libc++abi-dev
       - name: Run tests
         run: swift test --disable-experimental-prebuilts
 
@@ -40,6 +45,10 @@ jobs:
         with:
           node-version: "22"
           cache: npm
+      - name: Install Linux libc++
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libc++-dev libc++abi-dev
       - uses: actions/cache@v4
         with:
           path: .build
