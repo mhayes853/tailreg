@@ -123,7 +123,8 @@
     // MARK: - Metadata
 
     private static func name(of pid: pid_t) -> String? {
-      var path = [CChar](repeating: 0, count: Int(PROC_PIDPATHINFO_MAXSIZE))
+      // `PROC_PIDPATHINFO_MAXSIZE` is `MAXPATHLEN * 4`, a computed macro Swift cannot import.
+      var path = [CChar](repeating: 0, count: 4 * 1024)
       if proc_pidpath(pid, &path, UInt32(path.count)) > 0 {
         let resolved = String(cString: path)
         if let component = resolved.split(separator: "/").last {
