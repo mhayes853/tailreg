@@ -21,12 +21,12 @@ struct `Tailscale integration tests` {
     defer { listener.stop() }
 
     let binding = try await binder.bind(
-      localPort: listener.port,
+      localPort: listener.port.intValue,
       to: .explicit(Self.integrationPort)
     )
 
     #expect(binding.tailnetPort == Self.integrationPort)
-    #expect(binding.localPort == listener.port)
+    #expect(binding.localPort == listener.port.intValue)
     #expect(binding.isManaged)
     #expect(binding.hostname.hasSuffix(".ts.net"))
 
@@ -40,7 +40,7 @@ struct `Tailscale integration tests` {
   func `Refuses A Local Port With Nothing Listening`() async throws {
     let temp = try TempDirectory()
     let listener = try LoopbackListener()
-    let deadPort = listener.port
+    let deadPort = listener.port.intValue
     listener.stop()
 
     await #expect(throws: TailscaleError.noLocalServerListening(port: deadPort)) {
@@ -61,12 +61,12 @@ struct `Tailscale integration tests` {
     defer { Task { try? await binder.unbind(tailnetPort: Self.integrationPort) } }
 
     try await binder.bind(
-      localPort: alpha.port,
+      localPort: alpha.port.intValue,
       to: .explicit(Self.integrationPort),
       mountPath: "/alpha"
     )
     try await binder.bind(
-      localPort: beta.port,
+      localPort: beta.port.intValue,
       to: .explicit(Self.integrationPort),
       mountPath: "/beta"
     )
@@ -74,10 +74,10 @@ struct `Tailscale integration tests` {
     let both = try await binder.bindings().filter { $0.tailnetPort == Self.integrationPort }
     #expect(both.map(\.mountPath).sorted() == ["/alpha", "/beta"])
 
-    try await binder.unbind(localPort: alpha.port)
+    try await binder.unbind(localPort: alpha.port.intValue)
 
     let survivors = try await binder.bindings().filter { $0.tailnetPort == Self.integrationPort }
     #expect(survivors.map(\.mountPath) == ["/beta"])
-    #expect(survivors.map(\.localPort) == [beta.port])
+    #expect(survivors.map(\.localPort) == [beta.port.intValue])
   }
 }
