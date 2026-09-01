@@ -27,12 +27,12 @@ enum TailregMultiplexerE2EFixture {
     let multiplexer = Multiplexer(
       configuration: Multiplexer.Configuration(
         ingressPort: ingressPort,
+        unmatchedPathPolicy: .lastSelectedRouteCompatibility,
         routingCookieName: routingCookieName,
         secureCookies: secureCookies
       ),
       database: database
     )
-    let registry = multiplexer.registry
     for (name, port, route) in [
       ("web", firstUpstreamPort, "web-0"),
       ("web", secondUpstreamPort, "web-1"),
@@ -42,7 +42,7 @@ enum TailregMultiplexerE2EFixture {
       ("astro", astroUpstreamPort, "astro-0"),
       ("tanstack-start", tanStackStartUpstreamPort, "tanstack-start-0")
     ] {
-      let binding = try await registry.register(
+      let binding = try await multiplexer.registerRoute(
         name: name,
         upstream: URL(string: "http://127.0.0.1:\(port)")!
       )
@@ -60,7 +60,10 @@ enum TailregMultiplexerE2EFixture {
 
     let ingress = Application(
       responder: MuxIngressResponder(
-        registry: registry,
+        database: database,
+        muxID: multiplexer.configuration.id,
+        pathPolicy: multiplexer.configuration.pathPolicy,
+        unmatchedPathPolicy: multiplexer.configuration.unmatchedPathPolicy,
         cookieName: multiplexer.configuration.routingCookieName,
         secureCookies: multiplexer.configuration.secureCookies,
         capturedHeaderPolicy: multiplexer.configuration.capturedHeaderPolicy,

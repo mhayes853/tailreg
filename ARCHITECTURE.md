@@ -1,394 +1,173 @@
-# Architecture: the multiplexing proxy
+# Architecture: the project multiplexer
 
-**Status:** current design, partially implemented. This document describes the
-topology and the intended long-term shape; implementation notes call out the
-parts that exist today and the parts that are still planned.
+**Status:** implemented MUX design. Tailscale binding and CLI process management
+are intentionally outside this document.
 
-## Motivation
+## 1. Responsibility boundary
 
-Tailscale serve exposes HTTPS on a node at three ports only — 443, 8443, and
-10000 (the set encoded in `TailscaleTailnetPort.autoAllocationPool`). Exposing
-more than three local dev servers from one machine therefore requires
-multiplexing behind a single port, which means tailreg needs a reverse proxy of
-its own.
+A MUX is a long-lived, project-scoped reverse proxy. One MUX owns one project
+namespace and can serve any number of apps or processes within that project.
+An app is a route in the MUX; it is not another MUX process or listener.
 
-Once that proxy exists, HTTP traffic capture comes almost free: tailscaled is
-otherwise the only process that ever holds the decrypted bytes for a serve
-binding, and it exposes nothing per-request. `serve status` is configuration,
-tailnet flow logs are netflow-level, audit logs are control-plane, and
-`tailscale debug capture` sees ciphertext because tailscaled terminates TLS
-itself. Interposing is the only way to get a plaintext HTTP view.
+The MUX owns:
 
-The proxy also yields something tailscale cannot provide from outside the data
-path: per-request tailnet identity, via the `Tailscale-User-Login` and
-`Tailscale-User-Name` headers that serve injects into proxied requests.
+- one public ingress listener shared by all of its routes;
+- deterministic path-to-route resolution;
+- upstream path and forwarding-header policy;
+- streaming proxying and HTTP capture;
+- persistent route state through a `DatabaseWriter`;
+- a loopback-only admin listener for live route mutation and health checks; and
+- graceful startup and shutdown of both listeners.
 
-## 1. Shape of the data path
+The MUX does not own Tailscale configuration, project discovery, command-line
+presentation, or background-process policy. A future CLI can start a MUX and
+bind it, but those are callers of this component rather than MUX internals.
 
-The port is the discriminator. Tailscale does first-level dispatch by path
-prefix; the mux never parses a path to decide *whose* request it is.
+## 2. Runtime topology
 
-```
-                          tailnet clients
-                                |
-                                | HTTPS (tailscale-terminated TLS)
-                                v
-        +-----------------------------------------------+
-        |  tailscaled          node.tailnet.ts.net      |
-        |  TLS termination . identity . mount table     |
-        +-----------------------------------------------+
-        |   :443  /web   -->  http://127.0.0.1:9001     |
-        |   :443  /api   -->  http://127.0.0.1:9002     |
-        |   :443  /docs  -->  http://127.0.0.1:9003     |
-        +-----------------------------------------------+
-                     |          |          |
-            loopback |          |          |
-                     v          v          v
-        +-----------------------------------------------+
-        |  tailreg-mux                    ONE process   |
-        |  +----------+----------+----------+           |
-        |  |  :9001   |  :9002   |  :9003   |  public   |
-        |  |  = /web  |  = /api  |  = /docs | listeners |
-        |  +----+-----+----+-----+----+-----+           |
-        |       |          |          |                 |
-        |    transform . capture . forward              |
-        |                                               |
-        |  +----------+                                 |
-        |  |  :9100   |  admin listener -- 127.0.0.1    |
-        |  +----------+  never in any serve mount       |
-        +-------+----------+----------+-----------------+
-                v          v          v
-             :3000      :8080      :4321      dev servers
+```text
+                           public project path
+                                    |
+                                    v
+                         one MUX ingress listener
+                                    |
+                    exact first-segment route lookup
+                  /web-0            |             /api-0
+                    |                |                |
+                    v                v                v
+              localhost:3000                  localhost:8080
+
+ CLI or supervisor  ---- loopback admin API ---->  MUX route table
+                                                        |
+                                                        v
+                                                 tailreg.sqlite
 ```
 
-Three properties fall out of this shape, and they are the reason for it:
+Every MUX has a durable `muxID`. Routes are unique within that ID, so two
+projects can both have a `web-0` route without colliding. A MUX may also have
+an `externalPathPrefix`, such as `/alpha`, describing the project prefix used
+outside the MUX. If that prefix is stripped before ingress, the MUX still uses
+it when producing public URLs and `X-Forwarded-Prefix`.
 
-- A connection on `:9001` is `/web`'s, whatever its path says. There is no
-  shared path namespace inside the mux, so route names cannot collide with mux
-  internals.
-- Each serve mount decodes to a distinct `.localPort(...)`, so
-  `TailscaleBindingRecord.claims(_:)` stays a 1:1 match and `reconcile` is
-  otherwise untouched.
-- Unregistered paths 404 at tailscaled and never reach the mux at all.
+The ingress and admin surfaces are deliberately separate. Public traffic can
+only exercise app routes; `status` and route mutation never occupy names in
+the public app namespace.
 
-The admin listener sits on its own port precisely so that "reachable from the
-tailnet" and "can reconfigure the mux" are disjoint sets by construction.
+## 3. Route ownership and persistence
 
-## 2. Processes, targets, and shared state
+The `Multiplexer` accepts GRDB's `DatabaseWriter` directly; there is no route
+store, actor, cache, or persistence protocol. Small structured-query helpers
+perform transactional reads and mutations against `MuxRouteRecord` and
+`MuxInstanceRecord`. Production supplies the shared database pool or queue,
+while tests can supply an in-memory writer.
 
-```
- +--------------------+  POST /routes/{id}/open   +------------------+
- |   tailreg  (CLI)   | ------------------------> |   tailreg-mux    |
- |   short-lived      | <------------------------ |   resident       |
- +---------+----------+      { proxyPort: 9001 }  +---------+--------+
-           |                                                |
-           | writes: bindings, routes          reads: routes |
-           | reads:  logs, exchanges       writes: exchanges |
-           v                                                v
-   +------------------------------------------------------------+
-   |   tailreg.sqlite    WAL . busy timeout 5s . FileLock       |
-   +------------------------------------------------------------+
-```
+The database has two relevant records:
 
-Package target layout:
+- `MuxInstanceRecord`: durable MUX identity and external path prefix.
+- `MuxRouteRecord`: MUX ID, route slug, upstream URL, path mode, and lifecycle
+  timestamps.
 
-| Target | Contains | Depends on |
+On first use, the table creates or loads its MUX instance and hydrates all live
+routes. Reusing an ID with a different external prefix is rejected because it
+would change every public URL silently. Registration, update, and removal are
+persisted before the in-memory snapshot changes. Removal is a soft delete via
+`endedAt`, which preserves capture history.
+
+Route names are normalized to URL-safe slugs and receive a stable numeric
+suffix (`web-0`, `web-1`, and so on). The live-route uniqueness constraint is
+`(muxID, route)`, not global.
+
+Because requests resolve routes from SQLite, committed changes are immediately
+visible without an in-process invalidation mechanism. The admin API remains the
+live control surface so callers receive validation and the resulting public
+route in one operation.
+
+## 4. Live control surface
+
+The admin application binds to loopback independently of ingress and exposes:
+
+| Method | Path | Responsibility |
 |---|---|---|
-| `TailregCore` | route + exchange models, queries, migrations, tailscale CLI, request classification/refinement | SQLiteData, UUIDV7, AsyncAlgorithms, EdgeTools |
-| `TailregMultiplexer` | listeners, proxy engine, transforms, capture, admin API | `TailregCore`, Hummingbird, AsyncHTTPClient |
-| `TailregMultiplexerE2EFixture` | browser-test upstreams and capture inspection server | both multiplexer and Core APIs |
-| `tailreg` | planned CLI plus a hidden `mux run` subcommand | both |
+| `GET` | `/status` | process readiness |
+| `GET` | `/routes` | list this MUX's live routes |
+| `POST` | `/routes` | register another process/app |
+| `PUT` | `/routes/:route` | replace its upstream and optionally its path mode |
+| `DELETE` | `/routes/:route` | end and remove the route |
 
-Records live in Core so the CLI can query captured traffic without linking
-Hummingbird. The CLI target is intentionally not present until there is real
-CLI behavior to expose; the current package does not ship an empty placeholder
-executable.
+This is the seam a future `tailreg up` invocation uses to attach another
+process to a MUX that is already running. The API is local control-plane
+traffic; it must never be included in the public ingress binding.
 
-The current implementation has one shared ingress listener and an optional
-status application. Per-route listener supervision and the admin control
-surface shown in the target design remain planned.
+## 5. Request routing
 
-**Cross-process change propagation** is the admin `POST`, because GRDB's
-observation is same-process only and SQLite has no cross-process notification
-primitive. A low-frequency poll (a few seconds) backs it up so a dropped
-notification self-heals rather than wedging.
+Routing is deliberately mechanical:
 
-## 3. Registration
+1. Read the first path segment.
+2. Find an exact live route in this MUX.
+3. Redirect `/<route>` to the canonical `/<route>/` public URL.
+4. Compute the upstream path using the route's path mode.
+5. Proxy the request while streaming its body and capture observations.
 
-Two-phase, because only the process that binds a socket can claim a port
-without a TOCTOU race. If the CLI picked a port by binding-then-closing,
-another process could take it in the gap and the mux would fail to bind after
-tailscale had already been pointed at it.
+There is no longest-prefix matching and no reserved ingress path. Unknown
+routes return 404 by default.
 
-```
-  CLI              SQLite           mux/admin         tailscaled
-   |                  |                 |                  |
- 1 | validate slug    |                 |                  |
- 2 | preflight -------------------------------------------->|
-   |                  |                 |                  |
- 3 | insert .pending >|                 |                  |
-   |                  |                 |                  |
- 4 | open(routeID) --------------------->|                 |
-   |                  |            bind :9001              |
-   |<---------------- proxyPort 9001 ----|                 |
- 5 | persist port --->|                 |                  |
-   |                  |                 |                  |
- 6 | serve --https=443 --set-path=/web http://...:9001 --->|
- 7 | confirm via serve status <-----------------------------|
- 8 | activate ------->|                 |                  |
-   |                  |                 |                  |
-   X any failure -> close(.failed) + POST /routes/{id}/close
-```
+Each route chooses one of two upstream path modes:
 
-Steps 2, 6, 7 and 8 are the existing `TailscaleBinder.performBind` flow;
-only the port source changes.
+- `strip-route-prefix` (default): `/web-0/assets/app.js` becomes
+  `/assets/app.js` upstream.
+- `preserve-route-prefix`: `/web-0/assets/app.js` remains
+  `/web-0/assets/app.js` upstream.
 
-Nothing is publicly reachable until step 6, so a crash anywhere in 3-5 leaves
-only recoverable debris: `reconcile` already expires `.pending` rows past
-`claimGracePeriod` when they never appear in serve status, and the mux drops
-listeners for rows that are not live at startup. The `.pending -> .active`
-state machine built for the bind race is exactly the right shape here; no new
-states are needed.
+In both modes, the MUX supplies the complete public prefix, for example
+`X-Forwarded-Prefix: /alpha/web-0`, and normal proxy headers. Hop-by-hop and
+client-supplied proxy or Tailscale identity headers are not forwarded as
+trusted input.
 
-The mux reports the port and the CLI persists it, since the CLI already owns
-the row lifecycle and the file lock.
+An opt-in `lastSelectedRouteCompatibility` mode can route an otherwise
+unmatched root-relative request back to the last explicitly selected route.
+It uses a MUX-specific cookie name so project MUXes on one origin cannot
+collide. This is best-effort compatibility for apps that emit root-relative
+URLs, not the primary routing contract; explicit paths always win.
 
-## 4. Request pipeline
+## 6. Capture isolation
 
-```
-   inbound from tailscaled
-        |
-   +----v--------------------------------------------------+
-   | 1  listener --> route          port is the key;       |
-   |                                no path matching       |
-   +-------------------------------------------------------+
-   | 2  request headers                                    |
-   |      . drop hop-by-hop (Connection, TE, Trailer,      |
-   |        Transfer-Encoding, Upgrade, Proxy-*)           |
-   |      . drop client-supplied Tailscale-* then re-add   |
-   |        only what arrived via serve                    |
-   |      . add X-Forwarded-Proto / -Host / -For           |
-   |      . add X-Forwarded-Prefix: /web                   |
-   +-------------------------------------------------------+
-   | 3  path transform          transparent: pass through  |
-   |                            strip:       drop /web     |
-   +-------------------------------------------------------+
-   | 4  open exchange record    method, path, identity, t0 |
-   +----+--------------------------------------------------+
-        |
-        +--------------> upstream  http://127.0.0.1:3000
-        |                                    |
-        |<-------------- response head ------+
-   +----v--------------------------------------------------+
-   | 5  response headers                                   |
-   |      . drop hop-by-hop                                |
-   |      . strip mode only: rewrite Location,             |
-   |        rewrite Set-Cookie Path                        |
-   +-------------------------------------------------------+
-   | 6  body: stream through, observe bytes                |
-   |        NEVER collect() -- SSE and chunked must flow    |
-   +-------------------------------------------------------+
-   | 7  close record: status, bytes in/out, duration       |
-   +----+--------------------------------------------------+
-        v
-   outbound to tailscaled
-```
+Capture remains in the request data path and streams bounded observations
+rather than collecting whole bodies. Exchanges reference route IDs, which in
+turn reference a MUX ID. Startup recovery marks only this MUX's incomplete
+exchanges as abandoned, so starting one project MUX cannot alter another
+project's capture state in the shared database.
 
-Notes on the non-obvious steps:
+Sensitive header values are redacted by default. A generated request ID is
+forwarded upstream so later process-level extraction can correlate local logs
+with the proxy exchange.
 
-**Step 2, identity.** `Tailscale-User-Login` and friends are only meaningful on
-connections that actually came through serve. The loopback listener is
-reachable by any local process, so inbound copies must be dropped before
-anything downstream reads them. Treat identity as informational, never
-authorizational.
+## 7. Lifecycle and failure behavior
 
-**Step 3** is a static per-route transform decided at registration, not a
-routing decision. That is what keeps the unresolved `--set-path` strip
-semantics (see open questions) a config flip rather than a broken router.
-
-**Step 6** is the constraint that shapes capture: the recorder observes an
-async sequence as it passes, accumulating counts. If bodies are ever captured,
-it is a bounded prefix with the true size recorded alongside, never a buffer.
-
-**Capture writes** batch by count-or-interval before touching SQLite, reusing
-the `chunks(ofCount:or:)` pattern from `ProcessLogMonitor` rather than writing
-per request.
-
-**Upstream client** is one shared AsyncHTTPClient with pooling. Short connect
-timeout (it is loopback) and no response timeout, since dev servers are slow
-and SSE is unbounded.
-
-## 5. Component decomposition
-
-The implemented source is organized into `Routing`, `Proxy`, and `Capture`
-areas inside `TailregMultiplexer`. `BindingRegistry` owns route state,
-`MuxRouteResolver` handles explicit paths and routing cookies, and
-`MuxHeaderPolicy` owns forwarding and capture-header rules. The responder
-coordinates the request lifecycle while `BodyCapture` and
-`CaptureRecorder` handle streamed capture.
-
-Request classification remains a cohesive policy in `RequestClassification.swift`;
-the model-backed refinement adapter lives under Core's `Intelligence` directory
-alongside the shared refinement protocol. Core owns the EdgeTools dependency so
-all consumers use the same refinement surface.
-
-The listener supervisor, path-transform, response-rewriter, and full admin API
-shown below are planned extensions rather than current types.
-
-```
- TailregMultiplexer
- |- ListenerSupervisor   binds/unbinds ports, owns listener lifecycle
- |- RouteTable (actor)   listener -> route snapshot, refreshed on reload
- |- ProxyHandler         per-request forward; Hummingbird in, AHC out
- |   |- PathTransform    transparent | strip, per route
- |   |- HeaderPolicy     hop-by-hop, X-Forwarded-*, identity, redaction
- |   \- ResponseRewriter Location + Set-Cookie  (strip mode only)
- |- CaptureRecorder      observe -> batch -> TailregCore
- \- AdminAPI             open / close / reload / status  (loopback)
-```
-
-## 6. Failure modes
+`Multiplexer.run()` loads durable routes before accepting traffic, then runs
+the admin and ingress applications as one service group. `SIGINT` and
+`SIGTERM` initiate graceful shutdown, and the capture recorder is flushed on
+both normal and error exits. This supports either foreground execution or a
+CLI-managed background child without changing MUX semantics.
 
 | Event | Behavior |
 |---|---|
-| Dev server not listening | 502 with a tailreg page naming the route and expected port, rather than tailscale's generic error |
-| Mux crashes | Serve mounts point at dead ports, so requests 502. On restart it reads live bindings and re-binds recorded ports |
-| Recorded port stolen after restart | Re-bind elsewhere, rewrite the serve mount, update the row |
-| `tailscale serve reset` run by hand | The DB is authoritative; startup reconciliation repairs tailscaled |
-| Route unbound | `serve ... off`, close listener, mark `.ended` |
+| Unknown route | 404 from ingress |
+| Upstream unavailable | 502 and failed capture completion |
+| Unsupported protocol upgrade | explicit 501; no accidental HTTP fallback |
+| MUX restart | live routes reload from SQLite before listeners run |
+| Route removal | persistence is ended, then the in-memory route disappears |
+| Reused MUX ID with changed external prefix | startup/load fails explicitly |
 
-## 7. Route naming and collisions
+## 8. Deferred work
 
-Route names are a **single path segment** matching `^[a-z0-9][a-z0-9-]*$`,
-enforced by a SQLite `CHECK` in the style of the existing schema. No slashes
-means no nesting and no longest-prefix subtleties between routes; no dots or
-percent-encoding means no traversal games. The existing
-`bindings_live_target` unique index on `(tailnetPort, proto, mountPath)`
-already gives per-port name uniqueness once `mountPath` is `/<name>`.
+- WebSocket tunneling. The ingress has an explicit upgrade branch, but the
+  bidirectional bridge is not implemented yet.
+- Response `Location` and `Set-Cookie Path` rewriting for applications that
+  require it.
+- Authentication beyond the loopback boundary if the admin API ever becomes
+  reachable through a non-local transport.
+- CLI ownership of PID files, foreground/background behavior, process launch,
+  and Tailscale binding reconciliation.
 
-Three distinct collision classes, with different resolutions:
-
-1. **Mux control surface vs app paths** - eliminated by putting the admin API
-   on its own listener that no serve mount references.
-2. **Route vs route** - eliminated by single-segment slugs.
-3. **One app's absolute paths landing on another app's mount** - *not*
-   fixable in the mux. All routes share one origin, so a hardcoded
-   `fetch('/api/users')` from the app at `/web` reaches the app registered at
-   `/api`, which may answer it. Mitigations: registered prefixes always beat
-   any future heuristic routing, and bind-time warnings on landmine names
-   (`api`, `assets`, `static`, `public`, `dist`, `src`, `favicon.ico`,
-   `_next`, `graphql`, `health`). Only distinct hostnames genuinely fix it.
-
-## 8. The subpath asset problem
-
-An app that assumes it is mounted at root emits absolute URLs (`/assets/x.js`,
-`fetch('/api')`) that do not carry the route prefix. This is the classic
-reverse-proxy-under-a-subpath problem, and it is not solvable at the proxy in
-general: nginx, Caddy, Apache and Traefik all expose strip/no-strip plus header
-rewriting, and all of them document that the rest is the application's job.
-Notably, Caddy keeps response-body rewriting out of core and Traefik declines
-to do it at all; nginx's `sub_filter` is a string substitution that forces
-upstream compression off and corrupts JS string literals that happen to match.
-
-The design therefore has two modes, and a clear primary:
-
-- **Transparent (default, supported).** The app is configured with its base
-  path (`vite --base=/web/`, Next `basePath`), the mux forwards the path
-  unchanged, and nothing is rewritten. Everything works, including client-side
-  URL construction.
-- **Strip (compatibility fallback).** The prefix is removed before forwarding;
-  `Location` and `Set-Cookie` `Path` are rewritten on the way back. Good for
-  APIs and simple server-rendered apps, best-effort for anything else.
-
-Two things make transparent mode practical rather than a documentation burden:
-
-- The mux sends `X-Forwarded-Prefix` alongside the rest of the `X-Forwarded-*`
-  set. This is a de-facto convention rather than an RFC (RFC 7239's
-  `Forwarded` has no path field; the WSGI world uses `X-Script-Name`), but it
-  is honored by many backend frameworks and costs a few header bytes.
-- When tailreg supervises the process, it can inject the base path itself,
-  since it knows the route name. This matters because JS dev servers do *not*
-  honor `X-Forwarded-Prefix` - bundlers bake asset URLs when serving, before
-  any header could influence them - so injection is the higher-value lever for
-  the primary audience, and the header covers API servers.
-
-## 9. Out of scope for v1
-
-- **WebSockets.** Deferred deliberately. Until then the pipeline has an
-  `Upgrade` hole, so HMR-driven dev servers are not usable through the mux.
-  Note also that WebSocket handshakes carry `Origin` but not `Referer`, so no
-  path-recovery heuristic can ever route them - transparent mode is the only
-  viable answer for HMR.
-- **Response body rewriting.** We are not reimplementing `sub_filter`. If it
-  ever becomes necessary, the defensible version parses HTML (the
-  `mod_proxy_html` approach) rather than substituting strings.
-- **Referer-based fallback routing for un-prefixed assets.** Under this
-  topology there is nowhere for it to live: unregistered paths 404 at
-  tailscaled and never reach the mux. Adding it would require a catch-all `/`
-  mount, which re-introduces tailreg owning the node root.
-
-Request and response body capture is implemented as a bounded prefix with the
-observed byte count recorded separately; sensitive headers remain redacted by
-default.
-
-## 10. Open questions
-
-- **Does `--set-path=/web` strip the prefix before proxying to the backend?**
-  The flag's help text ("Appends the specified path to the base URL for
-  accessing the underlying service") hints at stripping, but this needs an
-  empirical test against a throwaway mount. It determines whether
-  `PathTransform` in transparent mode is the identity or a re-add-prefix, and
-  it blocks writing the types.
-- **How the mux is started** - autostart on first bind, launchd/systemd user
-  service, or explicit - is deliberately unresolved.
-
-## Appendix: rejected alternatives
-
-**Single mux port with path discrimination.** Rejected on a code-level detail:
-`ServeConfigDTO.HandlerDTO.target` builds `.localPort` from `URLComponents`,
-which reads `.port` and discards the path. So `http://127.0.0.1:9999/web` and
-`http://127.0.0.1:9999/api` both decode to `.localPort(9999)`, multiple records
-claim the same live serve entry, and `reconcile` goes ambiguous as soon as
-there are two routes.
-
-**One serve mount at `/` fronting everything (topology A).** Cleaner internal
-model and it would give us the node root for an index page, but it claims the
-entire 443 surface, clobbering or being blocked by any existing user serve
-config - which `resolveTailnetPort` currently goes out of its way to detect.
-It also breaks the 1:1 record-to-serve-entry mapping that reconciliation
-depends on. Possible later as an opt-in.
-
-**Passive capture (pcap / eBPF on loopback).** Would see direct-to-localhost
-traffic that the proxy cannot, and needs no data-path insertion. Rejected:
-requires root, splits into BPF-device on macOS versus AF_PACKET/eBPF on Linux,
-demands TCP reassembly and an HTTP parser, and uprobe-based TLS interception
-needs per-library symbol resolution that breaks across versions. Far too much
-machinery for the delta.
-
-**Tailscale Services (`serve --service`).** Gives each app a distinct hostname
-and virtual IP, so every app sits at root and the entire subpath asset problem
-evaporates - arguably with better names (`https://web.tailnet.ts.net`) than
-paths provide. Not the default because it requires tailnet policy
-configuration and service approval, but this is the exit if path rewriting
-becomes a recurring support burden.
-
-**Process-level extraction instead of a proxy.** Three tiers, all complements
-rather than replacements: parsing the dev server's own stdout access logs is
-nearly free but format-dependent and lossy; runtime preload hooks
-(`NODE_OPTIONS=--require`) give genuinely richer data (route templates,
-handler timings, exceptions) at the cost of per-runtime work; eBPF uprobes see
-everything including TLS plaintext but are Linux-only, root-only, and brittle.
-The intended composition is the proxy as the portable spine, with a request ID
-stamped into the upstream request so process-side signals - including existing
-stdout `LogRecord` lines - can be joined back to the proxied exchange.
-
-**Process log attachment.** Discovering the listener PID is useful for
-best-effort diagnostics, but it cannot generally recover an already-running
-process's stdout or stderr: output inherited by a terminal or pipe has no
-passive second-reader interface. Tailreg may attach only to an independently
-readable source, such as a regular file used for stdout/stderr redirection, and
-must surface why other descriptors are unavailable rather than claiming to
-capture them. We will likely also need a managed process-launching mode: when
-tailreg starts the command itself, it can retain the stdout and stderr pipe
-ends from the outset and provide dependable live logs. That is a future
-workflow, not a prerequisite for the external-process attachment path.
+The central invariant is already established: a project consumes one MUX
+ingress regardless of how many local apps it contains.

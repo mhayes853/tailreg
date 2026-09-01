@@ -81,6 +81,7 @@ public final class CaptureRecorder: Sendable {
   private let refinementWorker: Task<Void, Never>?
 
   public init(
+    muxID: UUIDV7,
     database: any DatabaseWriter,
     classificationRefiner: (any RequestClassificationRefining)? = nil,
     batchSize: Int = 200,
@@ -134,7 +135,7 @@ public final class CaptureRecorder: Sendable {
       for await batch in batches {
         do {
           try await database.write { db in
-            try Self.apply(batch, in: db)
+            try Self.apply(batch, muxID: muxID, in: db)
           }
         } catch {
           onError(error)
@@ -245,12 +246,19 @@ public final class CaptureRecorder: Sendable {
     return String(decoding: content.prefix(4_096), as: UTF8.self)
   }
 
-  private static func apply(_ events: [Event], in db: Database) throws {
+  private static func apply(_ events: [Event], muxID: UUIDV7, in db: Database) throws {
     let batch = EventBatch(events)
 
     if let abandonedAt = batch.abandonedAt {
       try HTTPExchangeRecord
-        .where { $0.completedAt.is(nil) }
+        .where {
+          $0.completedAt.is(nil)
+            && $0.routeID.in(
+              MuxRouteRecord
+                .where { $0.muxID.eq(muxID) }
+                .select { $0.id }
+            )
+        }
         .update {
           $0.completedAt = #bind(abandonedAt)
           $0.outcome = #bind(HTTPExchangeOutcome.abandoned)

@@ -8,6 +8,7 @@ extension TailscaleBindingEndReason: QueryBindable, QueryDecodable {}
 extension ProcessStream: QueryBindable, QueryDecodable {}
 extension HTTPExchangeOutcome: QueryBindable, QueryDecodable {}
 extension HTTPExchangeBodyDirection: QueryBindable, QueryDecodable {}
+extension MuxRoutePathMode: QueryBindable, QueryDecodable {}
 
 @Table("bindings")
 public struct TailscaleBindingRecord: Hashable, Sendable {
@@ -103,27 +104,58 @@ public struct CapturedHTTPHeader: Codable, Equatable, Hashable, Sendable {
   }
 }
 
-@Table("muxRoutes")
-public struct MuxRouteRecord: Hashable, Sendable {
+public enum MuxRoutePathMode: String, Codable, Equatable, Sendable {
+  case stripRoutePrefix = "strip-route-prefix"
+  case preserveRoutePrefix = "preserve-route-prefix"
+}
+
+@Table("muxInstances")
+public struct MuxInstanceRecord: Hashable, Sendable {
   public let id: UUIDV7
-  public var name: String
-  public var route: String
-  public var upstreamURL: String
+  public var externalPathPrefix: String
   public var createdAt: Date
   public var endedAt: Date?
 
   public init(
     id: UUIDV7 = UUIDV7(),
+    externalPathPrefix: String,
+    createdAt: Date = Date(),
+    endedAt: Date? = nil
+  ) {
+    self.id = id
+    self.externalPathPrefix = externalPathPrefix
+    self.createdAt = createdAt
+    self.endedAt = endedAt
+  }
+}
+
+@Table("muxRoutes")
+public struct MuxRouteRecord: Hashable, Sendable {
+  public let id: UUIDV7
+  public var muxID: UUIDV7
+  public var name: String
+  public var route: String
+  public var upstreamURL: String
+  public var pathMode: MuxRoutePathMode
+  public var createdAt: Date
+  public var endedAt: Date?
+
+  public init(
+    id: UUIDV7 = UUIDV7(),
+    muxID: UUIDV7,
     name: String,
     route: String,
     upstreamURL: String,
+    pathMode: MuxRoutePathMode = .stripRoutePrefix,
     createdAt: Date,
     endedAt: Date? = nil
   ) {
     self.id = id
+    self.muxID = muxID
     self.name = name
     self.route = route
     self.upstreamURL = upstreamURL
+    self.pathMode = pathMode
     self.createdAt = createdAt
     self.endedAt = endedAt
   }
@@ -572,6 +604,68 @@ public func tailregDatabaseMigrator() -> DatabaseMigrator {
         ON "httpExchangeClassificationRefinements" (
           "classifierID", "classifierVersion", "id"
         )
+      """
+    )
+    .execute(db)
+  }
+
+  migrator.registerMigration("v5: scope routes to MUX instances") { db in
+    try #sql(
+      """
+      CREATE TABLE "muxInstances" (
+        "id"                 TEXT NOT NULL PRIMARY KEY,
+        "externalPathPrefix" TEXT NOT NULL,
+        "createdAt"          TEXT NOT NULL,
+        "endedAt"            TEXT,
+
+        CHECK (
+          "externalPathPrefix" = '' OR (
+            "externalPathPrefix" LIKE '/%'
+            AND "externalPathPrefix" NOT LIKE '%/'
+          )
+        )
+      ) STRICT
+      """
+    )
+    .execute(db)
+
+    let legacyMUX = MuxInstanceRecord(externalPathPrefix: "")
+    try MuxInstanceRecord.insert { legacyMUX }.execute(db)
+
+    try #sql(
+      """
+      ALTER TABLE "muxRoutes"
+        ADD COLUMN "muxID" TEXT REFERENCES "muxInstances"("id")
+      """
+    )
+    .execute(db)
+    try MuxRouteRecord
+      .where { $0.muxID.is(nil) }
+      .update { $0.muxID = #bind(legacyMUX.id) }
+      .execute(db)
+
+    try #sql(
+      """
+      ALTER TABLE "muxRoutes"
+        ADD COLUMN "pathMode" TEXT NOT NULL DEFAULT 'strip-route-prefix'
+        CHECK ("pathMode" IN ('strip-route-prefix', 'preserve-route-prefix'))
+      """
+    )
+    .execute(db)
+
+    try #sql("DROP INDEX \"muxRoutes_live_route\"").execute(db)
+    try #sql(
+      """
+      CREATE UNIQUE INDEX "muxRoutes_live_route"
+        ON "muxRoutes" ("muxID", "route")
+        WHERE "endedAt" IS NULL
+      """
+    )
+    .execute(db)
+    try #sql(
+      """
+      CREATE INDEX "muxRoutes_mux"
+        ON "muxRoutes" ("muxID", "createdAt")
       """
     )
     .execute(db)
