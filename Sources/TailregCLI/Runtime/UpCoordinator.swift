@@ -1,0 +1,432 @@
+import Foundation
+import TailregCore
+import TailregMultiplexer
+
+#if canImport(Darwin)
+  import Darwin
+#else
+  import Glibc
+#endif
+
+struct UpRequest: Sendable {
+  var projectPath: String?
+  var applicationNames: [String] = []
+  var adHocApplication: String?
+  var route: String?
+  var port: PortNumber?
+  var attachURL: URL?
+  var command: [String] = []
+  var tailnetPort: PortNumber?
+  var localOnly = false
+}
+
+struct UpResult: Sendable {
+  let projectName: String
+  let baseURL: URL
+  let applications: [StartedApplication]
+}
+
+struct StartedApplication: Sendable {
+  let name: String
+  let route: String?
+  let publicURL: URL?
+  let pid: Int32?
+}
+
+struct UpCoordinator: Sendable {
+  private let databasePath: String
+  private let executableURL: URL
+  private let environment: [String: String]
+  private let currentDirectory: URL
+  private let console = Console()
+
+  init(
+    databasePath: String = defaultTailregDatabasePath(),
+    executableURL: URL = URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL,
+    environment: [String: String] = ProcessInfo.processInfo.environment,
+    currentDirectory: URL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+  ) {
+    self.databasePath = databasePath
+    self.executableURL = executableURL
+    self.environment = environment
+    self.currentDirectory = currentDirectory
+  }
+
+  func run(
+    _ request: UpRequest,
+    onReady: @Sendable (UpResult) async -> Void = { _ in }
+  ) async throws -> UpResult {
+    let database = try openTailregDatabase(path: databasePath)
+    let project = try await ResolvedProject.resolve(
+      database: database,
+      explicitPath: request.projectPath,
+      currentDirectory: currentDirectory
+    )
+    let levels = try applicationLevels(for: request, project: project)
+    let muxController = MuxProcessController(
+      database: database,
+      databasePath: databasePath,
+      executableURL: executableURL
+    )
+    let (runtime, muxWasStarted) = try await muxController.ensureRunning(
+      for: project.record,
+      secureCookies: !request.localOnly
+    )
+    let endpointController = TailnetEndpointController(
+      databasePath: databasePath,
+      localOnly: request.localOnly,
+      requestedPort: request.tailnetPort,
+      environment: environment
+    )
+    let baseURL: URL
+    do {
+      baseURL = try await endpointController.ensure(ingressPort: runtime.ingressPort)
+    } catch {
+      if muxWasStarted { try? await muxController.stop(runtime) }
+      throw error
+    }
+
+    let admin = MuxAdminClient(port: runtime.adminPort)
+    var running: [RunningApplication] = []
+    do {
+      for level in levels {
+        let started = try await withThrowingTaskGroup(of: RunningApplication.self) { group in
+          for application in level {
+            group.addTask {
+              try await start(
+                application,
+                baseURL: baseURL,
+                admin: admin
+              )
+            }
+          }
+          var levelResults: [RunningApplication] = []
+          for try await result in group { levelResults.append(result) }
+          return levelResults.sorted { $0.name < $1.name }
+        }
+        running.append(contentsOf: started)
+      }
+    } catch {
+      await rollback(running, admin: admin)
+      try? await stopRuntimeIfUnused(
+        runtime,
+        admin: admin,
+        muxController: muxController,
+        endpointController: endpointController
+      )
+      throw error
+    }
+
+    let result = UpResult(
+      projectName: project.record.name,
+      baseURL: baseURL,
+      applications: running.map {
+        StartedApplication(
+          name: $0.name,
+          route: $0.route?.route,
+          publicURL: $0.route.flatMap { URL(string: $0.publicPath, relativeTo: baseURL) },
+          pid: $0.process?.pid
+        )
+      }
+    )
+    await printSummary(result)
+    await onReady(result)
+
+    let managed = running.filter { $0.process != nil }
+    guard !managed.isEmpty else { return result }
+    let signalSupervisor = SignalSupervisor(processes: managed.compactMap(\.process))
+    signalSupervisor.start()
+    defer { signalSupervisor.stop() }
+
+    await withTaskCancellationHandler {
+      await withTaskGroup(of: (RunningApplication, ProcessExit).self) { group in
+        for application in managed {
+          group.addTask {
+            (application, await application.process!.waitForExit())
+          }
+        }
+        for await (application, exit) in group {
+          for task in application.outputTasks { task.cancel() }
+          await removeRouteIfCurrent(application, admin: admin)
+          await console.write(
+            "[\(application.name)] exited with status \(exit.code)",
+            toStandardError: exit.code != 0
+          )
+        }
+      }
+    } onCancel: {
+      for application in managed {
+        if let process = application.process { requestProcessGroupTermination(process) }
+      }
+    }
+
+    try? await stopRuntimeIfUnused(
+      runtime,
+      admin: admin,
+      muxController: muxController,
+      endpointController: endpointController
+    )
+    return result
+  }
+
+  private func applicationLevels(for request: UpRequest, project: ResolvedProject) throws
+    -> [[ApplicationSpecification]]
+  {
+    if let name = request.adHocApplication {
+      let command: ProcessCommand? =
+        request.command.isEmpty
+        ? nil
+        : {
+          ProcessCommand(
+            executable: request.command[0],
+            arguments: Array(request.command.dropFirst()),
+            workingDirectory: project.root
+          )
+        }()
+      let application = try ApplicationSpecification(
+        name: name,
+        route: request.route,
+        port: request.port,
+        attachURL: request.attachURL,
+        command: command
+      )
+      return [[application]]
+    }
+    guard request.command.isEmpty else { throw UpError.commandRequiresApplication }
+    guard let specification = project.specification else {
+      throw UpError.configurationRequired
+    }
+    return try specification.selected(request.applicationNames)
+  }
+
+  private func start(
+    _ specification: ApplicationSpecification,
+    baseURL: URL,
+    admin: MuxAdminClient
+  ) async throws -> RunningApplication {
+    var process: LaunchedProcess?
+    var outputTasks: [Task<Void, Never>] = []
+    if var command = specification.command {
+      command.environment = environment.merging(command.environment) { _, configured in configured }
+      command.environment["TAILREG_PROJECT_URL"] = baseURL.absoluteString
+      if let route = specification.route {
+        command.environment["TAILREG_APP_PATH"] = "/\(route)/"
+      }
+      if let port = specification.port {
+        command.environment["TAILREG_PORT"] = port.description
+      }
+      let supervisedCommand = ProcessCommand(
+        executable: executableURL.path,
+        arguments: [SupervisedCommand.marker, command.executable] + command.arguments,
+        workingDirectory: command.workingDirectory,
+        environment: command.environment
+      )
+      let launched = try SystemProcessLauncher().launch(supervisedCommand)
+      process = launched
+      outputTasks = outputTasksFor(launched, name: specification.name)
+    }
+
+    do {
+      if let port = specification.listenerPort {
+        try await waitForListener(port: port, process: process, application: specification.name)
+      }
+      let route: MuxRouteResponse?
+      let previousRoute: MuxRouteResponse?
+      if specification.isExposed {
+        let upstream = specification.upstreamURL
+        let existing: MuxRouteResponse?
+        if let requestedRoute = specification.route {
+          existing = try await admin.routes().first { $0.route == requestedRoute }
+        } else {
+          existing = nil
+        }
+        if let existing {
+          route = try await admin.update(
+            route: existing.route,
+            upstream: upstream,
+            pathMode: specification.pathMode
+          )
+          previousRoute = existing
+        } else {
+          route = try await admin.register(
+            MuxRouteRegistrationRequest(
+              name: specification.name,
+              route: specification.route,
+              upstreamURL: upstream.absoluteString,
+              pathMode: specification.pathMode
+            )
+          )
+          previousRoute = nil
+        }
+      } else {
+        route = nil
+        previousRoute = nil
+      }
+      return RunningApplication(
+        name: specification.name,
+        process: process,
+        route: route,
+        previousRoute: previousRoute,
+        outputTasks: outputTasks
+      )
+    } catch {
+      if let process { requestProcessGroupTermination(process) }
+      for task in outputTasks { task.cancel() }
+      throw error
+    }
+  }
+
+  private func waitForListener(
+    port: PortNumber,
+    process: LaunchedProcess?,
+    application: String
+  ) async throws {
+    let timeoutMilliseconds = environment["TAILREG_STARTUP_TIMEOUT_MS"].flatMap(Int.init) ?? 30_000
+    let attempts = max(1, timeoutMilliseconds / 100)
+    let probe = SystemPortProbe()
+    for _ in 0..<attempts {
+      if await probe.isListening(port: port) { return }
+      if let process, !processIsAlive(process.pid) { throw UpError.exitedBeforeReady(application) }
+      try await Task.sleep(for: .milliseconds(100))
+    }
+    throw UpError.readinessTimedOut(application: application, port: port)
+  }
+
+  private func outputTasksFor(_ process: LaunchedProcess, name: String) -> [Task<Void, Never>] {
+    [process.standardOutput, process.standardError]
+      .map { stream in
+        Task {
+          for await line in stream {
+            await console.write(
+              "[\(name)] \(line.message)",
+              toStandardError: line.stream == .standardError
+            )
+          }
+        }
+      }
+  }
+
+  private func rollback(_ running: [RunningApplication], admin: MuxAdminClient) async {
+    for application in running {
+      if let process = application.process { requestProcessGroupTermination(process) }
+      for task in application.outputTasks { task.cancel() }
+      await removeRouteIfCurrent(application, admin: admin, restoringPrevious: true)
+    }
+  }
+
+  private func removeRouteIfCurrent(
+    _ application: RunningApplication,
+    admin: MuxAdminClient,
+    restoringPrevious: Bool = false
+  ) async {
+    guard let applied = application.route,
+      let current = (try? await admin.routes())?.first(where: { $0.route == applied.route }),
+      current.id == applied.id,
+      current.upstreamURL == applied.upstreamURL,
+      current.pathMode == applied.pathMode
+    else { return }
+    if restoringPrevious, let previous = application.previousRoute,
+      let upstream = URL(string: previous.upstreamURL)
+    {
+      _ = try? await admin.update(
+        route: previous.route,
+        upstream: upstream,
+        pathMode: previous.pathMode
+      )
+    } else {
+      try? await admin.remove(route: applied.route)
+    }
+  }
+
+  private func stopRuntimeIfUnused(
+    _ runtime: MuxRunRecord,
+    admin: MuxAdminClient,
+    muxController: MuxProcessController,
+    endpointController: TailnetEndpointController
+  ) async throws {
+    guard try await admin.routes().isEmpty else { return }
+    try await endpointController.remove(ingressPort: runtime.ingressPort)
+    try await muxController.stop(runtime)
+  }
+
+  private func printSummary(_ result: UpResult) async {
+    await console.write("\(result.projectName)  \(result.baseURL.absoluteString)")
+    for application in result.applications {
+      if let url = application.publicURL {
+        await console.write("  \(application.name)  \(url.absoluteString)")
+      } else if let pid = application.pid {
+        await console.write("  \(application.name)  pid \(pid) (not exposed)")
+      }
+    }
+  }
+}
+
+private struct RunningApplication: Sendable {
+  let name: String
+  let process: LaunchedProcess?
+  let route: MuxRouteResponse?
+  let previousRoute: MuxRouteResponse?
+  let outputTasks: [Task<Void, Never>]
+}
+
+private actor Console {
+  func write(_ message: String, toStandardError: Bool = false) {
+    let data = Data((message + "\n").utf8)
+    try? (toStandardError ? FileHandle.standardError : FileHandle.standardOutput)
+      .write(contentsOf: data)
+  }
+}
+
+private final class SignalSupervisor: @unchecked Sendable {
+  private let processes: [LaunchedProcess]
+  private let queue = DispatchQueue(label: "com.tailreg.cli.signals")
+  private var sources: [DispatchSourceSignal] = []
+
+  init(processes: [LaunchedProcess]) {
+    self.processes = processes
+  }
+
+  func start() {
+    for signalNumber in [SIGINT, SIGTERM] {
+      signal(signalNumber, SIG_IGN)
+      let source = DispatchSource.makeSignalSource(signal: signalNumber, queue: queue)
+      source.setEventHandler { [processes] in
+        for process in processes { requestProcessGroupTermination(process) }
+      }
+      source.resume()
+      sources.append(source)
+    }
+  }
+
+  func stop() {
+    for source in sources { source.cancel() }
+    sources.removeAll()
+    signal(SIGINT, SIG_DFL)
+    signal(SIGTERM, SIG_DFL)
+  }
+}
+
+private func requestProcessGroupTermination(_ process: LaunchedProcess) {
+  process.terminateProcessGroup()
+  DispatchQueue.global(qos: .utility)
+    .asyncAfter(deadline: .now() + 5) {
+      process.forceTerminateProcessGroup()
+    }
+}
+
+enum UpError: Error, CustomStringConvertible, Sendable {
+  case configurationRequired
+  case commandRequiresApplication
+  case exitedBeforeReady(String)
+  case readinessTimedOut(application: String, port: PortNumber)
+
+  var description: String {
+    switch self {
+    case .configurationRequired: "no tailreg.toml was found for this project"
+    case .commandRequiresApplication: "an ad hoc command requires --app"
+    case .exitedBeforeReady(let app): "application '\(app)' exited before becoming ready"
+    case .readinessTimedOut(let app, let port):
+      "timed out waiting for application '\(app)' on port \(port)"
+    }
+  }
+}

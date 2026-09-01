@@ -1,0 +1,16 @@
+[project]
+name = "storefront"
+
+[apps.api]
+route = "api"
+port = 19110
+command = ["node", "backend/server.mjs"]
+
+[apps.web]
+route = "web"
+port = 19109
+command = ["node", "frontend/server.mjs"]
+depends_on = ["api"]
+
+[apps.web.environment]
+API_BASE = "/api"

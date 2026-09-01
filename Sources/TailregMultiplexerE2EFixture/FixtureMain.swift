@@ -48,6 +48,18 @@ enum TailregMultiplexerE2EFixture {
       )
       precondition(binding.route == route)
     }
+    let fullStackFrontend = try await multiplexer.registerRoute(
+      name: "Storefront",
+      route: "web",
+      upstream: URL(string: "http://127.0.0.1:19109")!
+    )
+    let fullStackBackend = try await multiplexer.registerRoute(
+      name: "Storefront API",
+      route: "api",
+      upstream: URL(string: "http://127.0.0.1:19110")!
+    )
+    precondition(fullStackFrontend.route == "web")
+    precondition(fullStackBackend.route == "api")
 
     guard let captureRecorder = multiplexer.captureRecorder else {
       preconditionFailure("The E2E fixture requires capture storage")

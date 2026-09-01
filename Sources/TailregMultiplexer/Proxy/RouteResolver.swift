@@ -68,7 +68,6 @@ struct MuxRouteResolver: Sendable {
 
   private func binding(route: String) async throws -> MultiplexerBinding? {
     try await database.read { database in
-      try MuxRouteQueries.validate(muxID: muxID, pathPolicy: pathPolicy, in: database)
       return try MuxRouteQueries.live(muxID: muxID, route: route, in: database)
         .map { try MultiplexerBinding(record: $0, pathPolicy: pathPolicy) }
     }

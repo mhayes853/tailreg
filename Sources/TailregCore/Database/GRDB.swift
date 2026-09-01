@@ -112,18 +112,15 @@ public enum MuxRoutePathMode: String, Codable, Equatable, Sendable {
 @Table("muxInstances")
 public struct MuxInstanceRecord: Hashable, Sendable {
   public let id: UUIDV7
-  public var externalPathPrefix: String
   public var createdAt: Date
   public var endedAt: Date?
 
   public init(
     id: UUIDV7 = UUIDV7(),
-    externalPathPrefix: String,
     createdAt: Date = Date(),
     endedAt: Date? = nil
   ) {
     self.id = id
-    self.externalPathPrefix = externalPathPrefix
     self.createdAt = createdAt
     self.endedAt = endedAt
   }
@@ -156,6 +153,58 @@ public struct MuxRouteRecord: Hashable, Sendable {
     self.route = route
     self.upstreamURL = upstreamURL
     self.pathMode = pathMode
+    self.createdAt = createdAt
+    self.endedAt = endedAt
+  }
+}
+
+@Table("projects")
+public struct ProjectRecord: Hashable, Sendable {
+  public let id: UUIDV7
+  public var rootPath: String
+  public var name: String
+  public var muxID: UUIDV7
+  public var createdAt: Date
+
+  public init(
+    id: UUIDV7 = UUIDV7(),
+    rootPath: String,
+    name: String,
+    muxID: UUIDV7 = UUIDV7(),
+    createdAt: Date = Date()
+  ) {
+    self.id = id
+    self.rootPath = rootPath
+    self.name = name
+    self.muxID = muxID
+    self.createdAt = createdAt
+  }
+}
+
+@Table("muxRuns")
+public struct MuxRunRecord: Hashable, Sendable {
+  public let id: UUIDV7
+  public var projectID: UUIDV7
+  public var pid: Int
+  public var ingressPort: Int
+  public var adminPort: Int
+  public var createdAt: Date
+  public var endedAt: Date?
+
+  public init(
+    id: UUIDV7 = UUIDV7(),
+    projectID: UUIDV7,
+    pid: Int,
+    ingressPort: Int,
+    adminPort: Int,
+    createdAt: Date = Date(),
+    endedAt: Date? = nil
+  ) {
+    self.id = id
+    self.projectID = projectID
+    self.pid = pid
+    self.ingressPort = ingressPort
+    self.adminPort = adminPort
     self.createdAt = createdAt
     self.endedAt = endedAt
   }
@@ -613,23 +662,15 @@ public func tailregDatabaseMigrator() -> DatabaseMigrator {
     try #sql(
       """
       CREATE TABLE "muxInstances" (
-        "id"                 TEXT NOT NULL PRIMARY KEY,
-        "externalPathPrefix" TEXT NOT NULL,
-        "createdAt"          TEXT NOT NULL,
-        "endedAt"            TEXT,
-
-        CHECK (
-          "externalPathPrefix" = '' OR (
-            "externalPathPrefix" LIKE '/%'
-            AND "externalPathPrefix" NOT LIKE '%/'
-          )
-        )
+        "id"        TEXT NOT NULL PRIMARY KEY,
+        "createdAt" TEXT NOT NULL,
+        "endedAt"   TEXT
       ) STRICT
       """
     )
     .execute(db)
 
-    let legacyMUX = MuxInstanceRecord(externalPathPrefix: "")
+    let legacyMUX = MuxInstanceRecord()
     try MuxInstanceRecord.insert { legacyMUX }.execute(db)
 
     try #sql(
@@ -666,6 +707,53 @@ public func tailregDatabaseMigrator() -> DatabaseMigrator {
       """
       CREATE INDEX "muxRoutes_mux"
         ON "muxRoutes" ("muxID", "createdAt")
+      """
+    )
+    .execute(db)
+  }
+
+  migrator.registerMigration("v6: create project runtimes") { db in
+    try #sql(
+      """
+      CREATE TABLE "projects" (
+        "id"        TEXT NOT NULL PRIMARY KEY,
+        "rootPath"  TEXT NOT NULL UNIQUE,
+        "name"      TEXT NOT NULL,
+        "muxID"     TEXT NOT NULL UNIQUE,
+        "createdAt" TEXT NOT NULL,
+
+        CHECK ("rootPath" <> ''),
+        CHECK ("name" <> '')
+      ) STRICT
+      """
+    )
+    .execute(db)
+
+    try #sql(
+      """
+      CREATE TABLE "muxRuns" (
+        "id"          TEXT    NOT NULL PRIMARY KEY,
+        "projectID"   TEXT    NOT NULL REFERENCES "projects"("id") ON DELETE CASCADE,
+        "pid"         INTEGER NOT NULL,
+        "ingressPort" INTEGER NOT NULL,
+        "adminPort"   INTEGER NOT NULL,
+        "createdAt"   TEXT    NOT NULL,
+        "endedAt"     TEXT,
+
+        CHECK ("pid" > 0),
+        CHECK ("ingressPort" BETWEEN 1 AND 65535),
+        CHECK ("adminPort" BETWEEN 1 AND 65535),
+        CHECK ("ingressPort" <> "adminPort")
+      ) STRICT
+      """
+    )
+    .execute(db)
+
+    try #sql(
+      """
+      CREATE UNIQUE INDEX "muxRuns_live_project"
+        ON "muxRuns" ("projectID")
+        WHERE "endedAt" IS NULL
       """
     )
     .execute(db)

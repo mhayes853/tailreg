@@ -1,31 +1,15 @@
 import Foundation
 import TailregCore
 
-public enum MuxPathPolicyError: Error, Equatable, Sendable {
-  case invalidExternalPathPrefix
-}
-
 public struct MuxPathPolicy: Equatable, Sendable {
-  public let externalPathPrefix: String
-
-  public init() {
-    self.externalPathPrefix = ""
-  }
-
-  public init(externalPathPrefix: String) throws {
-    let prefix = externalPathPrefix == "/" ? "" : externalPathPrefix
-    guard prefix.isEmpty || Self.isValidPrefix(prefix) else {
-      throw MuxPathPolicyError.invalidExternalPathPrefix
-    }
-    self.externalPathPrefix = prefix
-  }
+  public init() {}
 
   public func publicPath(route: String, remainder: String = "/") -> String {
-    join(externalPathPrefix, "/\(route)", normalizedRemainder(remainder))
+    join("/\(route)", normalizedRemainder(remainder))
   }
 
   public func forwardedPrefix(route: String) -> String {
-    join(externalPathPrefix, "/\(route)")
+    join("/\(route)")
   }
 
   public func upstreamPath(
@@ -39,14 +23,6 @@ public struct MuxPathPolicy: Equatable, Sendable {
     case .preserveRoutePrefix:
       return join("/\(route)", normalizedRemainder(remainder))
     }
-  }
-
-  private static func isValidPrefix(_ prefix: String) -> Bool {
-    prefix.first == "/"
-      && prefix.last != "/"
-      && !prefix.contains("?")
-      && !prefix.contains("#")
-      && !prefix.contains("//")
   }
 
   private func normalizedRemainder(_ remainder: String) -> String {

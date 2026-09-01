@@ -48,15 +48,18 @@ public struct MultiplexerErrorResponse: ResponseCodable, Equatable, Sendable {
 
 public struct MuxRouteRegistrationRequest: Codable, Equatable, Sendable {
   public let name: String
+  public let route: String?
   public let upstreamURL: String
   public let pathMode: MuxRoutePathMode
 
   public init(
     name: String,
+    route: String? = nil,
     upstreamURL: String,
     pathMode: MuxRoutePathMode = .stripRoutePrefix
   ) {
     self.name = name
+    self.route = route
     self.upstreamURL = upstreamURL
     self.pathMode = pathMode
   }

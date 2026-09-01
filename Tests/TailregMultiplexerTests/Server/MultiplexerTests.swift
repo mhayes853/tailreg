@@ -155,23 +155,4 @@ struct `Multiplexer tests` {
     }
   }
 
-  @Test
-  func `Canonical redirects retain the external MUX prefix`() async throws {
-    let configuration = Multiplexer.Configuration(
-      pathPolicy: try MuxPathPolicy(externalPathPrefix: "/alpha")
-    )
-    let multiplexer = try Multiplexer(configuration: configuration)
-    _ = try await multiplexer.registerRoute(
-      name: "web",
-      upstream: URL(string: "http://127.0.0.1:1")!
-    )
-
-    try await multiplexer.buildIngressApplication()
-      .test(.router) { client in
-        try await client.execute(uri: "/web-0?preview=true", method: .get) { response in
-          #expect(response.status == .temporaryRedirect)
-          #expect(response.headers[.location] == "/alpha/web-0/?preview=true")
-        }
-      }
-  }
 }

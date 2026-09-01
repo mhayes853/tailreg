@@ -13,15 +13,10 @@ struct `MUX route persistence tests` {
 
   private func multiplexer(
     database: any DatabaseWriter,
-    muxID: UUIDV7 = UUIDV7(),
-    externalPathPrefix: String = ""
+    muxID: UUIDV7 = UUIDV7()
   ) throws -> Multiplexer {
-    let pathPolicy =
-      externalPathPrefix.isEmpty
-      ? MuxPathPolicy()
-      : try MuxPathPolicy(externalPathPrefix: externalPathPrefix)
     return Multiplexer(
-      configuration: Multiplexer.Configuration(id: muxID, pathPolicy: pathPolicy),
+      configuration: Multiplexer.Configuration(id: muxID),
       database: database
     )
   }
@@ -46,14 +41,40 @@ struct `MUX route persistence tests` {
   }
 
   @Test
-  func `External prefix is included in public paths`() async throws {
-    let mux = try multiplexer(database: database(), externalPathPrefix: "/alpha")
+  func `An explicit route is used without a generated suffix`() async throws {
+    let mux = try multiplexer(database: database())
     let binding = try await mux.registerRoute(
       name: "Web",
+      route: "web",
       upstream: URL(string: "http://127.0.0.1:3000")!
     )
 
-    #expect(binding.publicPath == "/alpha/web-0/")
+    #expect(binding.publicPath == "/web/")
+  }
+
+  @Test
+  func `Explicit routes are validated and cannot collide`() async throws {
+    let mux = try multiplexer(database: database())
+    _ = try await mux.registerRoute(
+      name: "API",
+      route: "api",
+      upstream: URL(string: "http://127.0.0.1:3000")!
+    )
+
+    await #expect(throws: MuxRouteError.routeAlreadyExists("api")) {
+      try await mux.registerRoute(
+        name: "Other API",
+        route: "api",
+        upstream: URL(string: "http://127.0.0.1:3001")!
+      )
+    }
+    await #expect(throws: MuxRouteError.invalidRoute) {
+      try await mux.registerRoute(
+        name: "Bad",
+        route: "Bad Route",
+        upstream: URL(string: "http://127.0.0.1:3002")!
+      )
+    }
   }
 
   @Test
@@ -112,32 +133,6 @@ struct `MUX route persistence tests` {
     #expect(restored.id == first.id)
     #expect(restored.upstream == first.upstream)
     #expect(restored.pathMode == first.pathMode)
-  }
-
-  @Test
-  func `A persisted MUX rejects a different external prefix`() async throws {
-    let database = try database()
-    let muxID = UUIDV7()
-    try await multiplexer(
-      database: database,
-      muxID: muxID,
-      externalPathPrefix: "/alpha"
-    )
-    .prepare()
-
-    let changed = try multiplexer(
-      database: database,
-      muxID: muxID,
-      externalPathPrefix: "/beta"
-    )
-    await #expect(
-      throws: MuxRouteError.externalPathPrefixMismatch(
-        expected: "/alpha",
-        actual: "/beta"
-      )
-    ) {
-      try await changed.prepare()
-    }
   }
 
   @Test

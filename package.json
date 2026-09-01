@@ -6,7 +6,9 @@
     "Tests/Fixtures/NextJS",
     "Tests/Fixtures/Nuxt",
     "Tests/Fixtures/SvelteKit",
-    "Tests/Fixtures/TanStackStart"
+    "Tests/Fixtures/TanStackStart",
+    "Tests/Fixtures/FullStack/frontend",
+    "Tests/Fixtures/FullStack/backend"
   ],
   "scripts": {
     "test:e2e": "playwright test"

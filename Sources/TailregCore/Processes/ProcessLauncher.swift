@@ -63,6 +63,19 @@ public final class LaunchedProcess: Sendable {
   public func terminate() {
     state.forceTerminate(pid: pid)
   }
+
+  /// Requests termination of a process group whose leader is this child.
+  ///
+  /// The caller is responsible for launching the child as a process-group leader. This is kept
+  /// separate from `terminate()` so generic process launches never signal unrelated descendants.
+  public func terminateProcessGroup() {
+    state.signalProcessGroup(pid: pid, signal: SIGTERM)
+  }
+
+  /// Forcefully stops a process group whose leader is this child.
+  public func forceTerminateProcessGroup() {
+    state.signalProcessGroup(pid: pid, signal: SIGKILL)
+  }
 }
 
 public struct SystemProcessLauncher: ProcessLaunching {
@@ -89,6 +102,13 @@ public struct SystemProcessLauncher: ProcessLaunching {
     process.standardOutput = standardOutput
     process.standardError = standardError
     process.currentDirectoryURL = command.workingDirectory
+    if !command.environment.isEmpty {
+      process.environment = ProcessInfo.processInfo.environment.merging(command.environment) {
+        _,
+        configured in
+        configured
+      }
+    }
 
     let state = ProcessLaunchState(process: process)
 
@@ -185,6 +205,13 @@ private final class ProcessLaunchState: Sendable {
     let exited = storage.withLock { $0.exit != nil }
     if !exited {
       _ = kill(pid, SIGKILL)
+    }
+  }
+
+  func signalProcessGroup(pid: Int32, signal: Int32) {
+    let exited = storage.withLock { $0.exit != nil }
+    if !exited {
+      _ = kill(-pid, signal)
     }
   }
 }

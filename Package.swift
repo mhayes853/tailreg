@@ -8,6 +8,10 @@ let package = Package(
         .macOS(.v26)
     ],
     products: [
+        .executable(
+            name: "tailreg",
+            targets: ["tailreg"]
+        ),
         .library(
             name: "TailregCore",
             targets: ["TailregCore"]
@@ -44,6 +48,14 @@ let package = Package(
             from: "1.1.0"
         ),
         .package(
+            url: "https://github.com/apple/swift-argument-parser",
+            from: "1.8.2"
+        ),
+        .package(
+            url: "https://github.com/mattt/swift-toml.git",
+            from: "2.0.0"
+        ),
+        .package(
             url: "https://github.com/mhayes853/swift-edge-tools.git",
             revision: "8a866e2e4dda952d9989d17e409d511d2a7a2f21",
             traits: ["Needle2"]
@@ -67,6 +79,21 @@ let package = Package(
                 .product(name: "AsyncHTTPClient", package: "async-http-client"),
                 .product(name: "Hummingbird", package: "hummingbird")
             ]
+        ),
+        .target(
+            name: "TailregCLI",
+            dependencies: [
+                "TailregCore",
+                "TailregMultiplexer",
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
+                .product(name: "SQLiteData", package: "sqlite-data"),
+                .product(name: "TOML", package: "swift-toml"),
+                .product(name: "UUIDV7", package: "swift-uuidv7")
+            ]
+        ),
+        .executableTarget(
+            name: "tailreg",
+            dependencies: ["TailregCLI"]
         ),
         .executableTarget(
             name: "TailregMultiplexerE2EFixture",
@@ -92,6 +119,14 @@ let package = Package(
                 .product(name: "SQLiteData", package: "sqlite-data"),
                 .product(name: "UUIDV7", package: "swift-uuidv7"),
                 .product(name: "HummingbirdTesting", package: "hummingbird")
+            ]
+        ),
+        .testTarget(
+            name: "TailregCLITests",
+            dependencies: [
+                "TailregCLI",
+                "TailregCore",
+                "TailregMultiplexer"
             ]
         )
     ]

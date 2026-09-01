@@ -17,6 +17,18 @@ export default defineConfig({
   ],
   webServer: [
     {
+      command: "node Tests/Fixtures/FullStack/frontend/server.mjs",
+      url: "http://127.0.0.1:19109/",
+      reuseExistingServer: false,
+      timeout: 30_000,
+    },
+    {
+      command: "node Tests/Fixtures/FullStack/backend/server.mjs",
+      url: "http://127.0.0.1:19110/products",
+      reuseExistingServer: false,
+      timeout: 30_000,
+    },
+    {
       command:
         "npm run build --workspace tailreg-e2e-astro && exec node Tests/Fixtures/Astro/dist/server/entry.mjs",
       url: "http://127.0.0.1:19107/",
@@ -58,7 +70,7 @@ export default defineConfig({
     {
       command:
         "swift build --product TailregMultiplexerE2EFixture && exec .build/debug/TailregMultiplexerE2EFixture",
-      url: "http://127.0.0.1:19100/_tailreg/status",
+      url: "http://127.0.0.1:19100/web-0/",
       reuseExistingServer: false,
       timeout: 120_000,
     },

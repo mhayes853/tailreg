@@ -16,7 +16,7 @@ struct `HTTP capture schema tests` {
     route: String,
     createdAt: Date = Date()
   ) -> (MuxInstanceRecord, MuxRouteRecord) {
-    let mux = MuxInstanceRecord(externalPathPrefix: "")
+    let mux = MuxInstanceRecord()
     return (
       mux,
       MuxRouteRecord(

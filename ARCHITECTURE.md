@@ -1,173 +1,195 @@
-# Architecture: the project multiplexer
+# Architecture: project lifecycle and multiplexer
 
-**Status:** implemented MUX design. Tailscale binding and CLI process management
-are intentionally outside this document.
+**Status:** implemented for `tailreg up`, project-scoped MUX processes, and
+root Tailscale bindings.
 
-## 1. Responsibility boundary
+## 1. Component responsibilities
 
-A MUX is a long-lived, project-scoped reverse proxy. One MUX owns one project
-namespace and can serve any number of apps or processes within that project.
-An app is a route in the MUX; it is not another MUX process or listener.
+Tailreg does not require a global daemon. Each CLI invocation opens the shared
+GRDB database directly and reconciles the project it was asked to bring up. A
+short-lived runtime lock serializes changes that affect MUX processes and local
+ports.
+
+The CLI owns:
+
+- project-root and `tailreg.toml` discovery;
+- validation and dependency ordering of application specifications;
+- durable project and MUX-run identity;
+- starting or reusing one MUX process for the project;
+- reconciling the project's root Tailscale binding;
+- launching or attaching local applications;
+- registering stable routes through the MUX's loopback admin API;
+- foreground signal handling, background re-execution, and process-group
+  supervision; and
+- rollback when startup fails partway through.
 
 The MUX owns:
 
-- one public ingress listener shared by all of its routes;
-- deterministic path-to-route resolution;
+- one public ingress listener shared by every project application;
+- exact path-to-route resolution and compatibility routing for root-relative
+  application requests;
 - upstream path and forwarding-header policy;
 - streaming proxying and HTTP capture;
-- persistent route state through a `DatabaseWriter`;
-- a loopback-only admin listener for live route mutation and health checks; and
-- graceful startup and shutdown of both listeners.
+- persistent route state through a GRDB `DatabaseWriter`; and
+- a separate loopback-only admin listener for health and route mutation.
 
-The MUX does not own Tailscale configuration, project discovery, command-line
-presentation, or background-process policy. A future CLI can start a MUX and
-bind it, but those are callers of this component rather than MUX internals.
+Tailscale owns TLS, tailnet identity, and the externally reachable port. It
+forwards `/` unchanged to the project MUX. It does not need to distinguish the
+applications itself.
 
 ## 2. Runtime topology
 
 ```text
-                           public project path
-                                    |
-                                    v
-                         one MUX ingress listener
-                                    |
-                    exact first-segment route lookup
-                  /web-0            |             /api-0
-                    |                |                |
-                    v                v                v
-              localhost:3000                  localhost:8080
+tailnet host:<project port>  -- serves / -->  project MUX ingress
+                                                   |
+                              first path segment    |
+                              /web                  | /api
+                                |                   |
+                                v                   v
+                         localhost:3000      localhost:8080
 
- CLI or supervisor  ---- loopback admin API ---->  MUX route table
-                                                        |
-                                                        v
-                                                 tailreg.sqlite
+tailreg up  -- loopback admin API --> routes
+     |                                  |
+     +-- launches/supervises apps       +--> tailreg.sqlite
+     +-- reconciles Tailscale root binding
 ```
 
-Every MUX has a durable `muxID`. Routes are unique within that ID, so two
-projects can both have a `web-0` route without colliding. A MUX may also have
-an `externalPathPrefix`, such as `/alpha`, describing the project prefix used
-outside the MUX. If that prefix is stripped before ingress, the MUX still uses
-it when producing public URLs and `X-Forwarded-Prefix`.
+One project consumes one MUX ingress and one Tailscale port regardless of its
+application count. Applications are MUX routes, not MUX instances. Unrelated
+projects use separate MUX processes, which keeps their failure and lifecycle
+boundaries independent.
 
-The ingress and admin surfaces are deliberately separate. Public traffic can
-only exercise app routes; `status` and route mutation never occupy names in
-the public app namespace.
+Every project has a canonical filesystem root and durable project ID. A live
+MUX run records its MUX ID, PID, ingress port, and admin port. Repeated
+`tailreg up` invocations verify both the PID and admin health endpoint before
+reusing it; stale runtime records are ended and replaced.
 
-## 3. Route ownership and persistence
+## 3. `tailreg up` lifecycle
 
-The `Multiplexer` accepts GRDB's `DatabaseWriter` directly; there is no route
-store, actor, cache, or persistence protocol. Small structured-query helpers
-perform transactional reads and mutations against `MuxRouteRecord` and
-`MuxInstanceRecord`. Production supplies the shared database pool or queue,
-while tests can supply an in-memory writer.
+The command follows one reconciliation path for configured and ad hoc apps:
 
-The database has two relevant records:
+1. Resolve an explicit `--project`, the nearest ancestor `tailreg.toml`, a Git
+   root, or finally the current directory.
+2. Parse and validate the TOML desired state, select requested apps, include
+   their dependencies, and produce dependency levels.
+3. Under the runtime lock, create or reuse the project's MUX and wait for its
+   loopback admin endpoint.
+4. Reuse or create a Tailscale HTTPS binding from `/` to the MUX ingress. With
+   `--local-only`, return the ingress URL without modifying Tailscale.
+5. Launch each dependency level concurrently. Each managed command becomes a
+   process-group leader and receives `TAILREG_PROJECT_URL`, `TAILREG_APP_PATH`,
+   and `TAILREG_PORT` where applicable.
+6. Wait for each declared port to listen, then create or update its MUX route.
+7. Print the project and application URLs and enter foreground supervision.
+8. As managed apps exit, end their routes. When no live routes remain, remove
+   the binding and stop the MUX.
 
-- `MuxInstanceRecord`: durable MUX identity and external path prefix.
-- `MuxRouteRecord`: MUX ID, route slug, upstream URL, path mode, and lifecycle
-  timestamps.
+Startup is transactional at the invocation boundary: if a later app fails,
+Tailreg terminates process groups and removes routes created by that invocation.
+It only stops the MUX when the MUX has no routes, so another invocation can
+attach applications safely.
 
-On first use, the table creates or loads its MUX instance and hydrates all live
-routes. Reusing an ID with a different external prefix is rejected because it
-would change every public URL silently. Registration, update, and removal are
-persisted before the in-memory snapshot changes. Removal is a soft delete via
-`endedAt`, which preserves capture history.
+`tailreg up --bg` re-executes the same command with standard streams redirected
+to a state-directory log. The parent waits for a readiness handshake containing
+the resolved URLs before returning. The child then follows the same supervision
+and cleanup path as a foreground invocation.
 
-Route names are normalized to URL-safe slugs and receive a stable numeric
-suffix (`web-0`, `web-1`, and so on). The live-route uniqueness constraint is
-`(muxID, route)`, not global.
+An attached application has no managed process. Its route and the MUX remain
+live after `tailreg up` returns because Tailreg does not own that process.
 
-Because requests resolve routes from SQLite, committed changes are immediately
-visible without an in-process invalidation mechanism. The admin API remains the
-live control surface so callers receive validation and the resulting public
-route in one operation.
+## 4. Project configuration
 
-## 4. Live control surface
+TOML expresses stable project desired state; command-line flags cover transient
+or ad hoc actions. This keeps multi-process startup repeatable without turning
+the configuration file into a runtime control protocol.
 
-The admin application binds to loopback independently of ingress and exposes:
+```toml
+[project]
+name = "storefront"
+
+[apps.api]
+route = "api"
+port = 8080
+command = ["swift", "run", "API"]
+
+[apps.web]
+route = "web"
+port = 3000
+command = ["npm", "run", "dev"]
+working_directory = "frontend"
+depends_on = ["api"]
+
+[apps.web.environment]
+API_BASE = "/api"
+```
+
+An application may specify one command or one loopback `attach` URL. Route,
+port, exposure, environment, dependency, working-directory, and path-mode
+settings are validated before any processes start. Stable route names must be
+unique within a project. If a route is omitted, the MUX allocates a normalized
+numeric route such as `web-0`.
+
+## 5. MUX route persistence and control
+
+`Multiplexer` accepts GRDB's `DatabaseWriter` directly. There is no route-store
+protocol, actor cache, or persistence abstraction. Structured-query helpers
+perform transactional reads and mutations against `MuxInstanceRecord` and
+`MuxRouteRecord`. Tests use an in-memory database writer.
+
+Routes are unique within their MUX ID. Registration, update, removal, and
+request resolution use SQLite as the source of truth, so separate CLI and MUX
+processes do not need an invalidation channel. Removal is a soft delete via
+`endedAt`, preserving capture history.
+
+The loopback admin listener is separate from public ingress:
 
 | Method | Path | Responsibility |
 |---|---|---|
-| `GET` | `/status` | process readiness |
-| `GET` | `/routes` | list this MUX's live routes |
-| `POST` | `/routes` | register another process/app |
-| `PUT` | `/routes/:route` | replace its upstream and optionally its path mode |
-| `DELETE` | `/routes/:route` | end and remove the route |
+| `GET` | `/status` | readiness and liveness |
+| `GET` | `/routes` | list live routes |
+| `POST` | `/routes` | register a process or attached app |
+| `PUT` | `/routes/:route` | replace upstream and path mode |
+| `DELETE` | `/routes/:route` | end a route |
 
-This is the seam a future `tailreg up` invocation uses to attach another
-process to a MUX that is already running. The API is local control-plane
-traffic; it must never be included in the public ingress binding.
+Public traffic can only exercise application routes. Admin paths never reserve
+names in the public namespace.
 
-## 5. Request routing
+## 6. Request routing
 
-Routing is deliberately mechanical:
+Routing is mechanical:
 
 1. Read the first path segment.
 2. Find an exact live route in this MUX.
-3. Redirect `/<route>` to the canonical `/<route>/` public URL.
+3. Redirect `/<route>` to canonical `/<route>/`.
 4. Compute the upstream path using the route's path mode.
-5. Proxy the request while streaming its body and capture observations.
+5. Stream the proxied request and capture bounded observations.
 
-There is no longest-prefix matching and no reserved ingress path. Unknown
-routes return 404 by default.
+`strip-route-prefix` is the default: `/web/assets/app.js` becomes
+`/assets/app.js` upstream. `preserve-route-prefix` keeps the complete path.
+The MUX supplies `X-Forwarded-Prefix: /web` and normal sanitized proxy headers.
 
-Each route chooses one of two upstream path modes:
+The project MUX uses `lastSelectedRouteCompatibility` for otherwise unmatched
+root-relative requests. Visiting `/web/` selects the web route in a MUX-specific
+cookie; a subsequent `/assets/app.js` can therefore return to web, while an
+explicit `/api/products` still resolves directly to api. This compatibility
+behavior is what allows a single root Tailscale binding to serve typical
+frontend/backend projects without rewriting every application asset URL.
 
-- `strip-route-prefix` (default): `/web-0/assets/app.js` becomes
-  `/assets/app.js` upstream.
-- `preserve-route-prefix`: `/web-0/assets/app.js` remains
-  `/web-0/assets/app.js` upstream.
-
-In both modes, the MUX supplies the complete public prefix, for example
-`X-Forwarded-Prefix: /alpha/web-0`, and normal proxy headers. Hop-by-hop and
-client-supplied proxy or Tailscale identity headers are not forwarded as
-trusted input.
-
-An opt-in `lastSelectedRouteCompatibility` mode can route an otherwise
-unmatched root-relative request back to the last explicitly selected route.
-It uses a MUX-specific cookie name so project MUXes on one origin cannot
-collide. This is best-effort compatibility for apps that emit root-relative
-URLs, not the primary routing contract; explicit paths always win.
-
-## 6. Capture isolation
-
-Capture remains in the request data path and streams bounded observations
-rather than collecting whole bodies. Exchanges reference route IDs, which in
-turn reference a MUX ID. Startup recovery marks only this MUX's incomplete
-exchanges as abandoned, so starting one project MUX cannot alter another
-project's capture state in the shared database.
-
-Sensitive header values are redacted by default. A generated request ID is
-forwarded upstream so later process-level extraction can correlate local logs
-with the proxy exchange.
-
-## 7. Lifecycle and failure behavior
-
-`Multiplexer.run()` loads durable routes before accepting traffic, then runs
-the admin and ingress applications as one service group. `SIGINT` and
-`SIGTERM` initiate graceful shutdown, and the capture recorder is flushed on
-both normal and error exits. This supports either foreground execution or a
-CLI-managed background child without changing MUX semantics.
+## 7. Failure behavior and deferred work
 
 | Event | Behavior |
 |---|---|
 | Unknown route | 404 from ingress |
 | Upstream unavailable | 502 and failed capture completion |
-| Unsupported protocol upgrade | explicit 501; no accidental HTTP fallback |
+| App exits before its listener is ready | startup fails and invocation changes roll back |
+| MUX record has stale PID or health fails | record ends and a replacement MUX starts |
+| Ctrl-C or SIGTERM | managed application process groups receive TERM, then KILL after a grace period |
 | MUX restart | live routes reload from SQLite before listeners run |
-| Route removal | persistence is ended, then the in-memory route disappears |
-| Reused MUX ID with changed external prefix | startup/load fails explicitly |
+| Unsupported protocol upgrade | explicit 501 |
 
-## 8. Deferred work
+Deferred commands include explicit `tailreg down`, status/listing, and log
+inspection. WebSocket tunneling, response `Location`/cookie-path rewriting, and
+non-loopback admin authentication also remain future MUX work.
 
-- WebSocket tunneling. The ingress has an explicit upgrade branch, but the
-  bidirectional bridge is not implemented yet.
-- Response `Location` and `Set-Cookie Path` rewriting for applications that
-  require it.
-- Authentication beyond the loopback boundary if the admin API ever becomes
-  reachable through a non-local transport.
-- CLI ownership of PID files, foreground/background behavior, process launch,
-  and Tailscale binding reconciliation.
-
-The central invariant is already established: a project consumes one MUX
-ingress regardless of how many local apps it contains.
+The central invariant is: one project owns one MUX and one root binding; every
+application is a route that can be attached independently.

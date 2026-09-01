@@ -98,11 +98,14 @@ public struct Multiplexer: Sendable {
         return try await MuxRouteResponse(
           registerRoute(
             name: registration.name,
+            route: registration.route,
             upstream: upstream,
             pathMode: registration.pathMode
           )
         )
-      } catch MuxRouteError.invalidName, MuxRouteError.invalidUpstream {
+      } catch MuxRouteError.invalidName, MuxRouteError.invalidRoute,
+        MuxRouteError.routeAlreadyExists, MuxRouteError.invalidUpstream
+      {
         throw HTTPError(.badRequest)
       }
     }
@@ -165,21 +168,12 @@ public struct Multiplexer: Sendable {
 
   public func prepare() async throws {
     try await database.write { database in
-      try MuxRouteQueries.prepare(
-        muxID: configuration.id,
-        pathPolicy: configuration.pathPolicy,
-        in: database
-      )
+      try MuxRouteQueries.prepare(muxID: configuration.id, in: database)
     }
   }
 
   public func routes() async throws -> [MultiplexerBinding] {
     try await database.read { database in
-      try MuxRouteQueries.validate(
-        muxID: configuration.id,
-        pathPolicy: configuration.pathPolicy,
-        in: database
-      )
       return try MuxRouteQueries.live(muxID: configuration.id, in: database)
         .map { try MultiplexerBinding(record: $0, pathPolicy: configuration.pathPolicy) }
     }
@@ -187,11 +181,6 @@ public struct Multiplexer: Sendable {
 
   public func binding(route: String) async throws -> MultiplexerBinding? {
     try await database.read { database in
-      try MuxRouteQueries.validate(
-        muxID: configuration.id,
-        pathPolicy: configuration.pathPolicy,
-        in: database
-      )
       return try MuxRouteQueries.live(muxID: configuration.id, route: route, in: database)
         .map { try MultiplexerBinding(record: $0, pathPolicy: configuration.pathPolicy) }
     }
@@ -200,19 +189,17 @@ public struct Multiplexer: Sendable {
   @discardableResult
   public func registerRoute(
     name: String,
+    route: String? = nil,
     upstream: URL,
     pathMode: MuxRoutePathMode = .stripRoutePrefix
   ) async throws -> MultiplexerBinding {
     try await database.write { database in
-      try MuxRouteQueries.prepare(
-        muxID: configuration.id,
-        pathPolicy: configuration.pathPolicy,
-        in: database
-      )
+      try MuxRouteQueries.prepare(muxID: configuration.id, in: database)
       return try MultiplexerBinding(
         record: MuxRouteQueries.register(
           muxID: configuration.id,
           name: name,
+          requestedRoute: route,
           upstream: upstream,
           pathMode: pathMode,
           in: database
@@ -229,11 +216,7 @@ public struct Multiplexer: Sendable {
     pathMode: MuxRoutePathMode? = nil
   ) async throws -> MultiplexerBinding {
     try await database.write { database in
-      try MuxRouteQueries.prepare(
-        muxID: configuration.id,
-        pathPolicy: configuration.pathPolicy,
-        in: database
-      )
+      try MuxRouteQueries.prepare(muxID: configuration.id, in: database)
       return try MultiplexerBinding(
         record: MuxRouteQueries.update(
           muxID: configuration.id,
@@ -250,11 +233,7 @@ public struct Multiplexer: Sendable {
   @discardableResult
   public func unregisterRoute(route: String) async throws -> MultiplexerBinding? {
     try await database.write { database in
-      try MuxRouteQueries.prepare(
-        muxID: configuration.id,
-        pathPolicy: configuration.pathPolicy,
-        in: database
-      )
+      try MuxRouteQueries.prepare(muxID: configuration.id, in: database)
       return try MuxRouteQueries.unregister(muxID: configuration.id, route: route, in: database)
         .map { try MultiplexerBinding(record: $0, pathPolicy: configuration.pathPolicy) }
     }

@@ -1,0 +1,7 @@
+{
+  "name": "tailreg-e2e-fullstack-backend",
+  "private": true,
+  "scripts": {
+    "start": "node server.mjs"
+  }
+}

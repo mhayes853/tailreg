@@ -30,38 +30,17 @@ public struct MultiplexerBinding: Equatable, Sendable {
 
 public enum MuxRouteError: Error, Equatable, Sendable {
   case invalidName
+  case invalidRoute
+  case routeAlreadyExists(String)
   case invalidUpstream
   case invalidPersistedUpstream(String)
-  case externalPathPrefixMismatch(expected: String, actual: String)
   case routeNotFound
 }
 
 enum MuxRouteQueries {
-  static func validate(
-    muxID: UUIDV7,
-    pathPolicy: MuxPathPolicy,
-    in database: Database
-  ) throws {
-    guard let persisted = try MuxInstanceRecord.find(muxID).fetchOne(database) else { return }
-    guard persisted.externalPathPrefix == pathPolicy.externalPathPrefix else {
-      throw MuxRouteError.externalPathPrefixMismatch(
-        expected: persisted.externalPathPrefix,
-        actual: pathPolicy.externalPathPrefix
-      )
-    }
-  }
-
-  static func prepare(
-    muxID: UUIDV7,
-    pathPolicy: MuxPathPolicy,
-    in database: Database
-  ) throws {
-    try validate(muxID: muxID, pathPolicy: pathPolicy, in: database)
+  static func prepare(muxID: UUIDV7, in database: Database) throws {
     if try MuxInstanceRecord.find(muxID).fetchOne(database) == nil {
-      let instance = MuxInstanceRecord(
-        id: muxID,
-        externalPathPrefix: pathPolicy.externalPathPrefix
-      )
+      let instance = MuxInstanceRecord(id: muxID)
       try MuxInstanceRecord.insert { instance }.execute(database)
     }
   }
@@ -86,6 +65,7 @@ enum MuxRouteQueries {
   static func register(
     muxID: UUIDV7,
     name: String,
+    requestedRoute: String?,
     upstream: URL,
     pathMode: MuxRoutePathMode,
     in database: Database
@@ -96,11 +76,23 @@ enum MuxRouteQueries {
     try validate(upstream: upstream)
 
     let occupiedRoutes = Set(try live(muxID: muxID, in: database).map(\.route))
-    var suffix = 0
-    var route = "\(normalizedName)-\(suffix)"
-    while occupiedRoutes.contains(route) {
-      suffix += 1
-      route = "\(normalizedName)-\(suffix)"
+    let route: String
+    if let requestedRoute {
+      guard let normalizedRoute = normalize(route: requestedRoute) else {
+        throw MuxRouteError.invalidRoute
+      }
+      guard !occupiedRoutes.contains(normalizedRoute) else {
+        throw MuxRouteError.routeAlreadyExists(normalizedRoute)
+      }
+      route = normalizedRoute
+    } else {
+      var suffix = 0
+      var candidate = "\(normalizedName)-\(suffix)"
+      while occupiedRoutes.contains(candidate) {
+        suffix += 1
+        candidate = "\(normalizedName)-\(suffix)"
+      }
+      route = candidate
     }
 
     let record = MuxRouteRecord(
@@ -166,5 +158,18 @@ enum MuxRouteQueries {
 
     guard !normalized.isEmpty else { return nil }
     return String(normalized.prefix(48))
+  }
+
+  private static func normalize(route: String) -> String? {
+    guard route == route.lowercased(), route.count <= 64 else { return nil }
+    let characters = Array(route)
+    guard let first = characters.first, let last = characters.last,
+      first.isLetter || first.isNumber,
+      last.isLetter || last.isNumber,
+      characters.allSatisfy({ $0.isLowercase || $0.isNumber || $0 == "-" })
+    else {
+      return nil
+    }
+    return route
   }
 }
