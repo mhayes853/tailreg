@@ -1,6 +1,5 @@
 import EdgeTools
 import Foundation
-import TailregCore
 
 extension EdgeToolsSession: RequestClassificationRefining where Engine == Needle2Engine {
   public var classifierID: String { "needle2" }

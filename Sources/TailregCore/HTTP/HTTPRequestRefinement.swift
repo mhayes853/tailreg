@@ -48,7 +48,7 @@ public struct RequestRefinementInput: Equatable, Sendable {
   }
 }
 
-/// A model-independent result that keeps EdgeTools outside the core domain.
+/// A model-independent result shared by heuristic and model-backed refinement.
 public struct RequestRefinement: Equatable, Sendable {
   public let usefulness: RequestUsefulness
   public let category: HTTPExchangeClassificationCategory

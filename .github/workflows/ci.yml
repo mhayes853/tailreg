@@ -25,6 +25,18 @@ jobs:
         run: |
           echo "nproc: $(nproc 2>/dev/null || sysctl -n hw.ncpu)"
           uname -a
+      - name: Install Linux libc++
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ca-certificates curl gnupg
+          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo gpg --dearmor --yes -o /usr/share/keyrings/llvm.gpg
+          echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] http://apt.llvm.org/jammy/ llvm-toolchain-jammy-21 main" \
+            | sudo tee /etc/apt/sources.list.d/llvm.list
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libc++-21-dev libc++abi-21-dev
+          echo "LIBRARY_PATH=/usr/lib/llvm-21/lib${LIBRARY_PATH:+:$LIBRARY_PATH}" >> "$GITHUB_ENV"
       - name: Run tests
         run: swift test --disable-experimental-prebuilts
 
@@ -40,6 +52,17 @@ jobs:
         with:
           node-version: "22"
           cache: npm
+      - name: Install Linux libc++
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ca-certificates curl gnupg
+          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo gpg --dearmor --yes -o /usr/share/keyrings/llvm.gpg
+          echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] http://apt.llvm.org/jammy/ llvm-toolchain-jammy-21 main" \
+            | sudo tee /etc/apt/sources.list.d/llvm.list
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libc++-21-dev libc++abi-21-dev
+          echo "LIBRARY_PATH=/usr/lib/llvm-21/lib${LIBRARY_PATH:+:$LIBRARY_PATH}" >> "$GITHUB_ENV"
       - uses: actions/cache@v4
         with:
           path: .build

@@ -9,20 +9,12 @@ let package = Package(
     ],
     products: [
         .library(
-            name: "Tailreg",
-            targets: ["Tailreg"]
-        ),
-        .library(
             name: "TailregCore",
             targets: ["TailregCore"]
         ),
         .library(
             name: "TailregMultiplexer",
             targets: ["TailregMultiplexer"]
-        ),
-        .library(
-            name: "TailregIntelligence",
-            targets: ["TailregIntelligence"]
         )
     ],
     dependencies: [
@@ -59,16 +51,10 @@ let package = Package(
     ],
     targets: [
         .target(
-            name: "Tailreg",
-            dependencies: [
-                "TailregCore",
-                .product(name: "Hummingbird", package: "hummingbird")
-            ]
-        ),
-        .target(
             name: "TailregCore",
             dependencies: [
                 .product(name: "AsyncAlgorithms", package: "swift-async-algorithms"),
+                .product(name: "EdgeTools", package: "swift-edge-tools"),
                 .product(name: "SQLiteData", package: "sqlite-data"),
                 .product(name: "UUIDV7", package: "swift-uuidv7")
             ]
@@ -82,17 +68,12 @@ let package = Package(
                 .product(name: "Hummingbird", package: "hummingbird")
             ]
         ),
-        .target(
-            name: "TailregIntelligence",
-            dependencies: [
-                "TailregCore",
-                .product(name: "EdgeTools", package: "swift-edge-tools")
-            ]
-        ),
         .executableTarget(
             name: "TailregMultiplexerE2EFixture",
             dependencies: [
+                "TailregCore",
                 "TailregMultiplexer",
+                .product(name: "SQLiteData", package: "sqlite-data"),
                 .product(name: "Hummingbird", package: "hummingbird")
             ]
         ),
@@ -108,6 +89,8 @@ let package = Package(
             dependencies: [
                 "TailregCore",
                 "TailregMultiplexer",
+                .product(name: "SQLiteData", package: "sqlite-data"),
+                .product(name: "UUIDV7", package: "swift-uuidv7"),
                 .product(name: "HummingbirdTesting", package: "hummingbird")
             ]
         )
