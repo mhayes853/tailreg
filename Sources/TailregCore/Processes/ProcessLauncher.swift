@@ -56,6 +56,12 @@ public final class LaunchedProcess: Sendable {
     await state.waitForExit()
   }
 
+  /// Whether the child has exited *and* been reaped.
+  ///
+  /// This is set by the launcher's own waiter, so it never reports a zombie as running the way a
+  /// `kill(pid, 0)` probe would. Callers polling for an owned child's exit should prefer it.
+  public var hasExited: Bool { state.hasExited }
+
   /// Forcefully stops the direct child process.
   ///
   /// This intentionally does not attempt to signal a process tree. Process-group supervision is
@@ -167,6 +173,8 @@ private final class ProcessLaunchState: Sendable {
   init(process: Process) {
     self.process = Mutex(process)
   }
+
+  var hasExited: Bool { storage.withLock { $0.exit != nil } }
 
   func waitForExit() async -> ProcessExit {
     await withCheckedContinuation { continuation in

@@ -1,7 +1,8 @@
 # Architecture: project lifecycle and multiplexer
 
 **Status:** implemented for `tailreg up`, project-scoped MUX processes, and
-root Tailscale bindings.
+root Tailscale bindings. The remaining command surface is specified in section
+7.
 
 ## 1. Component responsibilities
 
@@ -175,7 +176,121 @@ explicit `/api/products` still resolves directly to api. This compatibility
 behavior is what allows a single root Tailscale binding to serve typical
 frontend/backend projects without rewriting every application asset URL.
 
-## 7. Failure behavior and deferred work
+## 7. CLI command surface
+
+The public CLI should remain project-oriented. Commands resolve the project in
+the same way as `up`, accept `--project` when invoked elsewhere, and open the
+shared database directly. Read-only commands do not contact a daemon. Commands
+that change a MUX, route, binding, or process take the same short-lived runtime
+lock used by `up` and reconcile through the MUX admin API.
+
+| Command | Status | Responsibility |
+|---|---|---|
+| `tailreg up [APP...]` | Implemented | Reconcile the MUX and root binding, then launch or attach the selected applications and their dependencies. |
+| `tailreg down [APP...]` | Planned | Stop or detach selected applications. With no application names, tear down the complete current project runtime. |
+| `tailreg status` | Planned | Show desired and observed state for the current project. `--all` lists every known project. |
+| `tailreg logs [APP...]` | Planned | Read or follow retained application output and project-runtime diagnostics. |
+| `tailreg requests [APP...]` | Planned | Query captured HTTP exchanges and their heuristic or model-backed classifications. |
+| `tailreg request ID` | Planned | Show one captured exchange, including available bodies and classification details. |
+
+### `tailreg down`
+
+`down` is the lifecycle inverse of `up`, but it acts on observed runtime state
+rather than re-reading commands from TOML:
+
+- `tailreg down web` removes only `web`; it does not recursively stop the
+  dependencies that `up web` selected.
+- `tailreg down` removes all routes and Tailreg-owned application processes for
+  the current project.
+- A managed application receives TERM at its process-group boundary and KILL
+  after the existing grace period. An attached application is only detached;
+  Tailreg never signals a process it does not own.
+- Route removal is conditional on the route still referring to the application
+  run being stopped, so an older supervisor cannot remove a newer replacement.
+- Once the final route is gone, the command removes the project's root
+  Tailscale binding, stops the MUX, and ends the runtime records.
+
+The operation is idempotent. An application or project that is already down is
+reported as such and is not an error. A future `--all` option may apply this
+operation to all projects, but it should be explicit because it crosses project
+lifecycle boundaries.
+
+### `tailreg status`
+
+`status` is a read-mostly reconciliation view, not just a database dump. For
+each project it combines configured applications, live route records, MUX-run
+records, Tailscale bindings, PID liveness, and the MUX health endpoint. The
+default human view should show:
+
+- project name, root, and public base URL;
+- MUX state and PID;
+- each configured or live application, its route and upstream, whether it is
+  managed or attached, and its process state; and
+- discrepancies such as a stale PID, an unhealthy MUX, a missing binding, or a
+  route that is live but no longer configured.
+
+`tailreg status --all` reads every known project. Machine-readable output can
+be added as `--json` without creating a separate listing command; a standalone
+`tailreg projects` command would duplicate that view.
+
+### `tailreg logs`
+
+`logs` is for process output. With no application names it interleaves the
+current project's application streams and prefixes each line with the
+application name. Named applications filter the stream. The initial controls
+should be `--follow`/`-f`, `--tail N`, and `--since DURATION`; component filters
+may expose MUX and Tailscale diagnostics without mixing them into normal output.
+
+Foreground and background execution must write through the same per-application
+sink so that log behavior does not depend on how `up` was launched. The current
+background invocation log is only a bootstrap diagnostic and is not the durable
+interface for this command. Existing `LogRecord` rows belong to Tailscale
+bindings, so application output needs its own run-scoped records or durable file
+reference rather than overloading that table.
+
+### `tailreg requests` and `tailreg request`
+
+HTTP observation is separate from process logs. `requests` reads captured
+exchange summaries from SQLite and filters them by application/route, outcome,
+classification, tag, user, or time. `--follow` can poll or observe new database
+rows; it does not require a daemon or a control connection to the MUX.
+
+`request ID` renders one exchange with request and response metadata, retained
+bodies, the deterministic classification, and any later model-backed
+refinement. Querying does not run neural extraction: refinement happens in the
+MUX capture pipeline and its result or failure is persisted with the exchange.
+Body display should remain bounded and redact sensitive headers by default.
+
+### Commands that should not be public
+
+Attaching is already an `up` mode (`tailreg up --app NAME --attach URL`), not a
+separate lifecycle. Direct route mutation is an implementation detail of
+`up`/`down`, and direct MUX start/stop commands would let users violate the
+one-project/one-MUX invariant. Two hidden commands remain valid implementation
+details:
+
+- `_mux-run` is the child entry point for one project MUX.
+- `_exec` creates an application process group and replaces itself with the
+  configured executable.
+
+### Persistence needed by the remaining lifecycle commands
+
+`ProjectRecord`, `MuxRunRecord`, and `MuxRouteRecord` describe the project and
+MUX, but they do not durably describe application process ownership. Before
+`down`, application-aware `status`, and durable `logs` are implemented, add an
+application-run record containing at least:
+
+- project and route identity;
+- application name and managed-versus-attached ownership;
+- PID and process-group ID for managed processes;
+- creation, readiness, exit, and end state; and
+- the application log location or relation.
+
+The CLI writes this record before publishing the route and ends it during
+normal exit, rollback, or `down`. As with routes, structured GRDB queries are
+enough; no store protocol, actor cache, or global daemon is required.
+
+## 8. Failure behavior and deferred work
 
 | Event | Behavior |
 |---|---|
@@ -187,9 +302,9 @@ frontend/backend projects without rewriting every application asset URL.
 | MUX restart | live routes reload from SQLite before listeners run |
 | Unsupported protocol upgrade | explicit 501 |
 
-Deferred commands include explicit `tailreg down`, status/listing, and log
-inspection. WebSocket tunneling, response `Location`/cookie-path rewriting, and
-non-loopback admin authentication also remain future MUX work.
+The commands in section 7 remain implementation work. WebSocket tunneling,
+response `Location`/cookie-path rewriting, and non-loopback admin authentication
+also remain future MUX work.
 
 The central invariant is: one project owns one MUX and one root binding; every
 application is a route that can be attached independently.

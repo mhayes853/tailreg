@@ -57,6 +57,7 @@ struct UpCoordinator: Sendable {
     onReady: @Sendable (UpResult) async -> Void = { _ in }
   ) async throws -> UpResult {
     let database = try openTailregDatabase(path: databasePath)
+    let terminator = ProcessTerminator(grace: try TerminationGracePeriod(environment: environment))
     let project = try await ResolvedProject.resolve(
       database: database,
       explicitPath: request.projectPath,
@@ -66,7 +67,8 @@ struct UpCoordinator: Sendable {
     let muxController = MuxProcessController(
       database: database,
       databasePath: databasePath,
-      executableURL: executableURL
+      executableURL: executableURL,
+      terminator: terminator
     )
     let (runtime, muxWasStarted) = try await muxController.ensureRunning(
       for: project.record,
@@ -96,7 +98,8 @@ struct UpCoordinator: Sendable {
               try await start(
                 application,
                 baseURL: baseURL,
-                admin: admin
+                admin: admin,
+                terminator: terminator
               )
             }
           }
@@ -107,7 +110,7 @@ struct UpCoordinator: Sendable {
         running.append(contentsOf: started)
       }
     } catch {
-      await rollback(running, admin: admin)
+      await rollback(running, admin: admin, terminator: terminator)
       try? await stopRuntimeIfUnused(
         runtime,
         admin: admin,
@@ -134,7 +137,7 @@ struct UpCoordinator: Sendable {
 
     let managed = running.filter { $0.process != nil }
     guard !managed.isEmpty else { return result }
-    let signalSupervisor = SignalSupervisor(processes: managed.compactMap(\.process))
+    let signalSupervisor = SignalSupervisor { stopManaged(managed, terminator: terminator) }
     signalSupervisor.start()
     defer { signalSupervisor.stop() }
 
@@ -149,15 +152,13 @@ struct UpCoordinator: Sendable {
           for task in application.outputTasks { task.cancel() }
           await removeRouteIfCurrent(application, admin: admin)
           await console.write(
-            "[\(application.name)] exited with status \(exit.code)",
-            toStandardError: exit.code != 0
+            "[\(application.name)] \(Self.describe(exit))",
+            toStandardError: exit.code != 0 || exit.wasTerminatedBySignal
           )
         }
       }
     } onCancel: {
-      for application in managed {
-        if let process = application.process { requestProcessGroupTermination(process) }
-      }
+      stopManaged(managed, terminator: terminator)
     }
 
     try? await stopRuntimeIfUnused(
@@ -167,6 +168,36 @@ struct UpCoordinator: Sendable {
       endpointController: endpointController
     )
     return result
+  }
+
+  /// Requests a graceful stop from a synchronous context and escalates asynchronously.
+  ///
+  /// Signal handlers and cancellation callbacks cannot await, so the stop signal goes out inline
+  /// and keeps Ctrl-C responsive. Waiting out the grace period and escalating to SIGKILL is
+  /// policy, so it runs through the shared terminator instead of being reimplemented here. The
+  /// escalation is conditional on the group still running, which is what keeps a late SIGKILL
+  /// from reaching a recycled process group.
+  private func stopManaged(
+    _ managed: [RunningApplication],
+    terminator: ProcessTerminator<ContinuousClock>
+  ) {
+    for application in managed {
+      guard let process = application.process, let group = ProcessGroupID(process.pid) else {
+        continue
+      }
+      terminator.requestStop(.processGroup(group))
+      Task {
+        let outcome = await terminator.terminate(.processGroup(group), observing: .owned(process))
+        guard case .forced = outcome else { return }
+        await console.write("[\(application.name)] \(outcome)", toStandardError: true)
+      }
+    }
+  }
+
+  private static func describe(_ exit: ProcessExit) -> String {
+    exit.wasTerminatedBySignal
+      ? "terminated by signal \(exit.code)"
+      : "exited with status \(exit.code)"
   }
 
   private func applicationLevels(for request: UpRequest, project: ResolvedProject) throws
@@ -202,7 +233,8 @@ struct UpCoordinator: Sendable {
   private func start(
     _ specification: ApplicationSpecification,
     baseURL: URL,
-    admin: MuxAdminClient
+    admin: MuxAdminClient,
+    terminator: ProcessTerminator<ContinuousClock>
   ) async throws -> RunningApplication {
     var process: LaunchedProcess?
     var outputTasks: [Task<Void, Never>] = []
@@ -270,7 +302,7 @@ struct UpCoordinator: Sendable {
         outputTasks: outputTasks
       )
     } catch {
-      if let process { requestProcessGroupTermination(process) }
+      if let process { await terminator.stopProcessGroup(of: process) }
       for task in outputTasks { task.cancel() }
       throw error
     }
@@ -306,9 +338,13 @@ struct UpCoordinator: Sendable {
       }
   }
 
-  private func rollback(_ running: [RunningApplication], admin: MuxAdminClient) async {
+  private func rollback(
+    _ running: [RunningApplication],
+    admin: MuxAdminClient,
+    terminator: ProcessTerminator<ContinuousClock>
+  ) async {
     for application in running {
-      if let process = application.process { requestProcessGroupTermination(process) }
+      if let process = application.process { await terminator.stopProcessGroup(of: process) }
       for task in application.outputTasks { task.cancel() }
       await removeRouteIfCurrent(application, admin: admin, restoringPrevious: true)
     }
@@ -378,21 +414,19 @@ private actor Console {
 }
 
 private final class SignalSupervisor: @unchecked Sendable {
-  private let processes: [LaunchedProcess]
+  private let onSignal: @Sendable () -> Void
   private let queue = DispatchQueue(label: "com.tailreg.cli.signals")
   private var sources: [DispatchSourceSignal] = []
 
-  init(processes: [LaunchedProcess]) {
-    self.processes = processes
+  init(onSignal: @escaping @Sendable () -> Void) {
+    self.onSignal = onSignal
   }
 
   func start() {
     for signalNumber in [SIGINT, SIGTERM] {
       signal(signalNumber, SIG_IGN)
       let source = DispatchSource.makeSignalSource(signal: signalNumber, queue: queue)
-      source.setEventHandler { [processes] in
-        for process in processes { requestProcessGroupTermination(process) }
-      }
+      source.setEventHandler { [onSignal] in onSignal() }
       source.resume()
       sources.append(source)
     }
@@ -404,14 +438,6 @@ private final class SignalSupervisor: @unchecked Sendable {
     signal(SIGINT, SIG_DFL)
     signal(SIGTERM, SIG_DFL)
   }
-}
-
-private func requestProcessGroupTermination(_ process: LaunchedProcess) {
-  process.terminateProcessGroup()
-  DispatchQueue.global(qos: .utility)
-    .asyncAfter(deadline: .now() + 5) {
-      process.forceTerminateProcessGroup()
-    }
 }
 
 enum UpError: Error, CustomStringConvertible, Sendable {

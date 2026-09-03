@@ -1,4 +1,5 @@
 import Foundation
+import TailregCore
 
 #if canImport(Darwin)
   import Darwin
@@ -25,8 +26,7 @@ public enum SupervisedCommand {
         return 126
       }
     }
-    signal(SIGINT, SIG_DFL)
-    signal(SIGTERM, SIG_DFL)
+    resetInheritedSignalState()
 
     var pointers = command.map { strdup($0) }
     pointers.append(nil)

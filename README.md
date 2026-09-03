@@ -57,6 +57,18 @@ Background startup waits up to 60 seconds for readiness by default. Set
 `TAILREG_BACKGROUND_STARTUP_TIMEOUT_MS` to a positive millisecond value when a
 project needs a different limit.
 
+## Stopping applications
+
+Ctrl-C, or a SIGTERM to Tailreg, sends SIGTERM to each managed application's
+process group so the application and its own children stop together. Tailreg
+waits up to 5 seconds for each one and escalates to SIGKILL only if it is still
+running; an application that has to be killed is reported as such rather than
+being counted as a clean stop. Set `TAILREG_STOP_TIMEOUT_MS` to a positive
+millisecond value to change that grace period.
+
+Attached applications are never signalled. Tailreg does not own those processes,
+so bringing a project down only removes their routes.
+
 ## Tests
 
 Run the Swift tests with `swift test`. The browser suite requires `npm ci`,

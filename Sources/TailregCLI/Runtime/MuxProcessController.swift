@@ -13,6 +13,7 @@ struct MuxProcessController: Sendable {
   let database: any DatabaseWriter
   let databasePath: String
   let executableURL: URL
+  let terminator: ProcessTerminator<ContinuousClock>
 
   func ensureRunning(for project: ProjectRecord, secureCookies: Bool) async throws
     -> (MuxRunRecord, Bool)
@@ -70,15 +71,16 @@ struct MuxProcessController: Sendable {
     }
   }
 
-  func stop(_ run: MuxRunRecord) async throws {
-    if processIsAlive(run.pid) {
-      _ = kill(pid_t(run.pid), SIGTERM)
-      for _ in 0..<40 where processIsAlive(run.pid) {
-        try await Task.sleep(for: .milliseconds(50))
-      }
-      if processIsAlive(run.pid) { _ = kill(pid_t(run.pid), SIGKILL) }
-    }
+  /// Stops the project MUX.
+  ///
+  /// The MUX is signalled as a single process rather than a group: it has no children of its own,
+  /// and whether the spawning API makes it a group leader is platform-dependent. It is also not
+  /// necessarily this process's child, so its exit can only be observed by probing.
+  @discardableResult
+  func stop(_ run: MuxRunRecord) async throws -> TerminationOutcome {
+    let outcome = await terminator.terminate(.process(pid_t(run.pid)), observing: .observed)
     try await end(run.id)
+    return outcome
   }
 
   private func liveRun(for projectID: UUIDV7) async throws -> MuxRunRecord? {

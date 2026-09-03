@@ -18,6 +18,9 @@ struct MuxRunCommand: AsyncParsableCommand {
   @Flag(name: .long) var insecureCookies = false
 
   mutating func run() async throws {
+    // The MUX is spawned from whichever thread reached the launch, so it cannot rely on having
+    // inherited a signal mask that lets it observe the SIGTERM used to stop it gracefully.
+    resetInheritedSignalState()
     guard let id = UUIDV7(uuidString: muxID) else {
       throw ValidationError("invalid MUX ID")
     }
