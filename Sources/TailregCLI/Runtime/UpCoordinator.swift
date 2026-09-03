@@ -1,6 +1,8 @@
 import Foundation
+import SQLiteData
 import TailregCore
 import TailregMultiplexer
+import UUIDV7
 
 #if canImport(Darwin)
   import Darwin
@@ -63,6 +65,9 @@ struct UpCoordinator: Sendable {
       explicitPath: request.projectPath,
       currentDirectory: currentDirectory
     )
+    try await database.write { database in
+      try AppRunRecord.reclaimAbandoned(for: project.record.id, in: database)
+    }
     let levels = try applicationLevels(for: request, project: project)
     let muxController = MuxProcessController(
       database: database,
@@ -99,7 +104,9 @@ struct UpCoordinator: Sendable {
                 application,
                 baseURL: baseURL,
                 admin: admin,
-                terminator: terminator
+                terminator: terminator,
+                database: database,
+                projectID: project.record.id
               )
             }
           }
@@ -110,7 +117,7 @@ struct UpCoordinator: Sendable {
         running.append(contentsOf: started)
       }
     } catch {
-      await rollback(running, admin: admin, terminator: terminator)
+      await rollback(running, admin: admin, terminator: terminator, database: database)
       try? await stopRuntimeIfUnused(
         runtime,
         admin: admin,
@@ -150,7 +157,9 @@ struct UpCoordinator: Sendable {
         }
         for await (application, exit) in group {
           for task in application.outputTasks { task.cancel() }
-          await removeRouteIfCurrent(application, admin: admin)
+          if await endRun(application, database: database) {
+            await removeRouteIfCurrent(application, admin: admin)
+          }
           await console.write(
             "[\(application.name)] \(Self.describe(exit))",
             toStandardError: exit.code != 0 || exit.wasTerminatedBySignal
@@ -234,7 +243,9 @@ struct UpCoordinator: Sendable {
     _ specification: ApplicationSpecification,
     baseURL: URL,
     admin: MuxAdminClient,
-    terminator: ProcessTerminator<ContinuousClock>
+    terminator: ProcessTerminator<ContinuousClock>,
+    database: any DatabaseWriter,
+    projectID: UUIDV7
   ) async throws -> RunningApplication {
     var process: LaunchedProcess?
     var outputTasks: [Task<Void, Never>] = []
@@ -262,6 +273,26 @@ struct UpCoordinator: Sendable {
       if let port = specification.listenerPort {
         try await waitForListener(port: port, process: process, application: specification.name)
       }
+
+      // Recorded before the route is published: a run without a route can be reconciled later,
+      // whereas a published route with no owning run has nothing to identify who may remove it.
+      let appRun = AppRunRecord(
+        projectID: projectID,
+        name: specification.name,
+        ownership: process == nil ? .attached : .managed,
+        pid: process.map { Int($0.pid) },
+        processGroupID: process.flatMap { ProcessGroupID(getpgid($0.pid)) }
+          .map { Int($0.rawValue) },
+        processStartedAt: process.flatMap { processStartTime(of: $0.pid) }
+      )
+      do {
+        try await database.write { database in
+          try AppRunRecord.insert { appRun }.execute(database)
+        }
+      } catch {
+        throw UpError.alreadyRunning(specification.name)
+      }
+
       let route: MuxRouteResponse?
       let previousRoute: MuxRouteResponse?
       if specification.isExposed {
@@ -294,8 +325,18 @@ struct UpCoordinator: Sendable {
         route = nil
         previousRoute = nil
       }
+      if let route {
+        let routeID: UUIDV7? = route.id
+        try await database.write { database in
+          try AppRunRecord.find(appRun.id)
+            .update { $0.routeID = #bind(routeID) }
+            .execute(database)
+        }
+      }
+
       return RunningApplication(
         name: specification.name,
+        appRunID: appRun.id,
         process: process,
         route: route,
         previousRoute: previousRoute,
@@ -341,13 +382,29 @@ struct UpCoordinator: Sendable {
   private func rollback(
     _ running: [RunningApplication],
     admin: MuxAdminClient,
-    terminator: ProcessTerminator<ContinuousClock>
+    terminator: ProcessTerminator<ContinuousClock>,
+    database: any DatabaseWriter
   ) async {
     for application in running {
       if let process = application.process { await terminator.stopProcessGroup(of: process) }
       for task in application.outputTasks { task.cancel() }
+      guard await endRun(application, database: database) else { continue }
       await removeRouteIfCurrent(application, admin: admin, restoringPrevious: true)
     }
+  }
+
+  /// Ends the application's run, reporting whether this invocation is the one that ended it.
+  ///
+  /// Only the winner may touch the route. A route survives a restart in place, so it cannot say
+  /// which run owns it; the run record can, and ending it is a compare-and-swap.
+  private func endRun(
+    _ application: RunningApplication,
+    database: any DatabaseWriter
+  ) async -> Bool {
+    let ended = try? await database.write { database in
+      try AppRunRecord.end(application.appRunID, in: database)
+    }
+    return ended ?? false
   }
 
   private func removeRouteIfCurrent(
@@ -399,6 +456,7 @@ struct UpCoordinator: Sendable {
 
 private struct RunningApplication: Sendable {
   let name: String
+  let appRunID: UUIDV7
   let process: LaunchedProcess?
   let route: MuxRouteResponse?
   let previousRoute: MuxRouteResponse?
@@ -443,6 +501,7 @@ private final class SignalSupervisor: @unchecked Sendable {
 enum UpError: Error, CustomStringConvertible, Sendable {
   case configurationRequired
   case commandRequiresApplication
+  case alreadyRunning(String)
   case exitedBeforeReady(String)
   case readinessTimedOut(application: String, port: PortNumber)
 
@@ -450,6 +509,7 @@ enum UpError: Error, CustomStringConvertible, Sendable {
     switch self {
     case .configurationRequired: "no tailreg.toml was found for this project"
     case .commandRequiresApplication: "an ad hoc command requires --app"
+    case .alreadyRunning(let app): "application '\(app)' is already running in this project"
     case .exitedBeforeReady(let app): "application '\(app)' exited before becoming ready"
     case .readinessTimedOut(let app, let port):
       "timed out waiting for application '\(app)' on port \(port)"
