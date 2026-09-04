@@ -4,7 +4,7 @@ public struct TailregCommand: AsyncParsableCommand {
   public static let configuration = CommandConfiguration(
     commandName: "tailreg",
     abstract: "Expose and observe local project applications over Tailscale.",
-    subcommands: [UpCommand.self, MuxRunCommand.self],
+    subcommands: [UpCommand.self, DownCommand.self, MuxRunCommand.self],
     defaultSubcommand: UpCommand.self
   )
 

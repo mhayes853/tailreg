@@ -7,6 +7,26 @@ public struct ResolvedProject: Sendable {
   public let root: URL
   public let specification: ProjectSpecification?
 
+  /// Finds an already-known project without creating one.
+  ///
+  /// Commands that act on observed runtime state must not bring a project into existence just by
+  /// being run somewhere. A directory that was never brought up has nothing to report on, which
+  /// is a `nil` rather than a new row.
+  public static func lookUp(
+    database: any DatabaseWriter,
+    explicitPath: String?,
+    currentDirectory: URL
+  ) async throws -> Self? {
+    let root = try projectRoot(explicitPath: explicitPath, currentDirectory: currentDirectory)
+    let rootPath = root.path
+    guard
+      let record = try await database.read({ database in
+        try ProjectRecord.where { $0.rootPath.eq(rootPath) }.fetchOne(database)
+      })
+    else { return nil }
+    return Self(record: record, root: root, specification: try specification(at: root))
+  }
+
   public static func resolve(
     database: any DatabaseWriter,
     explicitPath: String?,
@@ -15,11 +35,7 @@ public struct ResolvedProject: Sendable {
     -> Self
   {
     let root = try projectRoot(explicitPath: explicitPath, currentDirectory: currentDirectory)
-    let configurationFile = root.appendingPathComponent("tailreg.toml")
-    let specification =
-      FileManager.default.fileExists(atPath: configurationFile.path)
-      ? try ProjectSpecification.load(from: configurationFile)
-      : nil
+    let specification = try specification(at: root)
     let fallbackName = root.lastPathComponent.isEmpty ? "project" : root.lastPathComponent
     let name =
       (specification?.name?.trimmingCharacters(in: .whitespacesAndNewlines))
@@ -40,6 +56,12 @@ public struct ResolvedProject: Sendable {
       return project
     }
     return Self(record: record, root: root, specification: specification)
+  }
+
+  private static func specification(at root: URL) throws -> ProjectSpecification? {
+    let configurationFile = root.appendingPathComponent("tailreg.toml")
+    guard FileManager.default.fileExists(atPath: configurationFile.path) else { return nil }
+    return try ProjectSpecification.load(from: configurationFile)
   }
 
   private static func projectRoot(explicitPath: String?, currentDirectory: URL) throws -> URL {

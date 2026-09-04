@@ -83,7 +83,7 @@ struct MuxProcessController: Sendable {
     return outcome
   }
 
-  private func liveRun(for projectID: UUIDV7) async throws -> MuxRunRecord? {
+  func liveRun(for projectID: UUIDV7) async throws -> MuxRunRecord? {
     try await database.read { database in
       try MuxRunRecord
         .where { $0.projectID.eq(projectID) && $0.endedAt.is(nil) }

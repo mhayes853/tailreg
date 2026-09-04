@@ -1,8 +1,8 @@
 # Architecture: project lifecycle and multiplexer
 
-**Status:** implemented for `tailreg up`, project-scoped MUX processes, and
-root Tailscale bindings. The remaining command surface is specified in section
-7.
+**Status:** implemented for `tailreg up`, `tailreg down`, project-scoped MUX
+processes, and root Tailscale bindings. The remaining command surface is
+specified in section 7.
 
 ## 1. Component responsibilities
 
@@ -187,7 +187,7 @@ lock used by `up` and reconcile through the MUX admin API.
 | Command | Status | Responsibility |
 |---|---|---|
 | `tailreg up [APP...]` | Implemented | Reconcile the MUX and root binding, then launch or attach the selected applications and their dependencies. |
-| `tailreg down [APP...]` | Planned | Stop or detach selected applications. With no application names, tear down the complete current project runtime. |
+| `tailreg down [APP...]` | Implemented | Stop or detach selected applications. With no application names, tear down the complete current project runtime. |
 | `tailreg status` | Planned | Show desired and observed state for the current project. `--all` lists every known project. |
 | `tailreg logs [APP...]` | Planned | Read or follow retained application output and project-runtime diagnostics. |
 | `tailreg requests [APP...]` | Planned | Query captured HTTP exchanges and their heuristic or model-backed classifications. |
@@ -205,15 +205,34 @@ rather than re-reading commands from TOML:
 - A managed application receives TERM at its process-group boundary and KILL
   after the existing grace period. An attached application is only detached;
   Tailreg never signals a process it does not own.
-- Route removal is conditional on the route still referring to the application
-  run being stopped, so an older supervisor cannot remove a newer replacement.
+- Route removal is conditional on winning a compare-and-swap against the
+  application-run record, so an older supervisor cannot remove a newer
+  replacement. The route itself cannot carry that condition: `up` updates an
+  existing route in place, so a route's identity survives a restart and does not
+  distinguish one run from the next.
+- A recorded PID is only signalled when the process's start time still matches
+  the one recorded with it. These records outlive reboots, and the kernel
+  recycles PID numbers.
 - Once the final route is gone, the command removes the project's root
   Tailscale binding, stops the MUX, and ends the runtime records.
 
 The operation is idempotent. An application or project that is already down is
-reported as such and is not an error. A future `--all` option may apply this
-operation to all projects, but it should be explicit because it crosses project
-lifecycle boundaries.
+reported as such and is not an error, including for ad hoc applications that
+`tailreg.toml` never described.
+
+The exit status answers one question: is everything that was selected now down.
+An application that had to be killed is still down, so it exits zero and traces
+the problem as a warning; a non-zero status means something is still running or
+the runtime could not be removed. Diagnostics carry the detail the status
+cannot, because an exit code cannot say which application misbehaved.
+
+`down` performs the whole teardown itself rather than leaving part of it to a
+running supervisor. It holds the runtime lock across its reconciliation, and a
+supervisor blocked on that lock may time out and give up, so nothing else is
+guaranteed to finish the work.
+
+A future `--all` option may apply this operation to all projects, but it should
+be explicit because it crosses project lifecycle boundaries.
 
 ### `tailreg status`
 

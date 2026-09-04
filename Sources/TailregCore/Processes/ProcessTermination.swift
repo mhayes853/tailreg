@@ -72,12 +72,22 @@ public enum TerminationOutcome: Hashable, Sendable, CustomStringConvertible {
   case alreadyExited
   case exitedOnTermination(after: Duration)
   case forced(after: Duration)
+  /// Escalation did not work: the target was still there after SIGKILL. Almost always a process
+  /// blocked in an uninterruptible wait, and the one outcome that means it is still running.
+  case unresponsive(after: Duration)
+
+  /// Whether the target ended up stopped, however it got there.
+  public var isStopped: Bool {
+    if case .unresponsive = self { return false }
+    return true
+  }
 
   public var description: String {
     switch self {
     case .alreadyExited: "already stopped"
     case .exitedOnTermination: "stopped"
     case .forced(let elapsed): "did not stop within \(elapsed); killed"
+    case .unresponsive(let elapsed): "did not stop within \(elapsed), and survived being killed"
     }
   }
 }
@@ -164,8 +174,13 @@ public struct ProcessTerminator<C: Clock>: Sendable where C.Instant.Duration == 
     }
 
     target.send(SIGKILL)
-    _ = await waitForExit(target, observing: observation, within: Self.forcedConfirmation)
-    return .forced(after: start.duration(to: clock.now))
+    let stopped = await waitForExit(
+      target,
+      observing: observation,
+      within: Self.forcedConfirmation
+    )
+    let elapsed = start.duration(to: clock.now)
+    return stopped ? .forced(after: elapsed) : .unresponsive(after: elapsed)
   }
 
   /// Stops the process group led by a child this process launched and still owns.

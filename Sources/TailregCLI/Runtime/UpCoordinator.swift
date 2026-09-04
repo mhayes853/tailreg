@@ -94,6 +94,11 @@ struct UpCoordinator: Sendable {
     }
 
     let admin = MuxAdminClient(port: runtime.adminPort)
+    let teardown = ProjectRuntimeTeardown(
+      admin: admin,
+      muxController: muxController,
+      endpointController: endpointController
+    )
     var running: [RunningApplication] = []
     do {
       for level in levels {
@@ -118,12 +123,7 @@ struct UpCoordinator: Sendable {
       }
     } catch {
       await rollback(running, admin: admin, terminator: terminator, database: database)
-      try? await stopRuntimeIfUnused(
-        runtime,
-        admin: admin,
-        muxController: muxController,
-        endpointController: endpointController
-      )
+      await stopRuntimeIfUnused(teardown, runtime: runtime)
       throw error
     }
 
@@ -170,12 +170,7 @@ struct UpCoordinator: Sendable {
       stopManaged(managed, terminator: terminator)
     }
 
-    try? await stopRuntimeIfUnused(
-      runtime,
-      admin: admin,
-      muxController: muxController,
-      endpointController: endpointController
-    )
+    await stopRuntimeIfUnused(teardown, runtime: runtime)
     return result
   }
 
@@ -197,8 +192,11 @@ struct UpCoordinator: Sendable {
       terminator.requestStop(.processGroup(group))
       Task {
         let outcome = await terminator.terminate(.processGroup(group), observing: .owned(process))
-        guard case .forced = outcome else { return }
-        await console.write("[\(application.name)] \(outcome)", toStandardError: true)
+        switch outcome {
+        case .forced: await console.warning("\(application.name) \(outcome)")
+        case .unresponsive: await console.error("\(application.name) \(outcome)")
+        case .alreadyExited, .exitedOnTermination: break
+        }
       }
     }
   }
@@ -431,15 +429,28 @@ struct UpCoordinator: Sendable {
     }
   }
 
+  /// Tears the shared runtime down under the runtime lock, so a concurrent `up` cannot be
+  /// starting the MUX this decides is unused.
+  ///
+  /// The lock is taken here rather than around supervision: holding it for the lifetime of the
+  /// foreground process would block every other invocation for the project. A failure to acquire
+  /// it means another invocation is reconciling and will reach the same decision, so it is
+  /// reported and not retried.
   private func stopRuntimeIfUnused(
-    _ runtime: MuxRunRecord,
-    admin: MuxAdminClient,
-    muxController: MuxProcessController,
-    endpointController: TailnetEndpointController
-  ) async throws {
-    guard try await admin.routes().isEmpty else { return }
-    try await endpointController.remove(ingressPort: runtime.ingressPort)
-    try await muxController.stop(runtime)
+    _ teardown: ProjectRuntimeTeardown,
+    runtime: MuxRunRecord
+  ) async {
+    let lock = FileLock(path: databasePath + ".runtime.lock")
+    do {
+      let outcome = try await lock.withLock(.exclusive) {
+        await teardown.stopIfUnused(runtime)
+      }
+      if case .failed(let reason) = outcome {
+        await console.error("the project runtime was not fully removed: \(reason)")
+      }
+    } catch {
+      await console.warning("could not take the runtime lock to stop the project: \(error)")
+    }
   }
 
   private func printSummary(_ result: UpResult) async {
@@ -463,11 +474,21 @@ private struct RunningApplication: Sendable {
   let outputTasks: [Task<Void, Never>]
 }
 
-private actor Console {
+actor Console {
   func write(_ message: String, toStandardError: Bool = false) {
     let data = Data((message + "\n").utf8)
     try? (toStandardError ? FileHandle.standardError : FileHandle.standardOutput)
       .write(contentsOf: data)
+  }
+
+  /// Something worth tracing that is not a failure: the work was done, but not as intended.
+  func warning(_ message: String) {
+    write("warning: \(message)", toStandardError: true)
+  }
+
+  /// Something that leaves the system in a state the caller did not ask for.
+  func error(_ message: String) {
+    write("error: \(message)", toStandardError: true)
   }
 }
 
