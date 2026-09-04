@@ -15,14 +15,24 @@ struct MuxProcessController: Sendable {
   let executableURL: URL
   let terminator: ProcessTerminator<ContinuousClock>
 
-  func ensureRunning(for project: ProjectRecord, secureCookies: Bool) async throws
+  /// Starts the project MUX, or adopts the one already running.
+  ///
+  /// Cookies are marked secure only for a tailnet runtime: the loopback listener is served over
+  /// plain HTTP, where a secure cookie would never be sent back.
+  func ensureRunning(for project: ProjectRecord, exposure: ProjectExposure) async throws
     -> (MuxRunRecord, Bool)
   {
     let lock = FileLock(path: databasePath + ".runtime.lock")
     return try await lock.withLock(.exclusive) {
-      if let existing = try await liveRun(for: project.id) {
+      if var existing = try await liveRun(for: project.id) {
         let client = MuxAdminClient(port: existing.adminPort)
         if processIsAlive(existing.pid), await client.isReady() {
+          // An adopted runtime is about to be published the way *this* invocation asked for, so
+          // the record follows the request rather than the invocation that happened to start it.
+          if existing.exposure != exposure {
+            try await setExposure(exposure, of: existing.id)
+            existing.exposure = exposure
+          }
           return (existing, false)
         }
         try await end(existing.id)
@@ -38,7 +48,7 @@ struct MuxProcessController: Sendable {
           "--mux-id", project.muxID.uuidString,
           "--ingress-port", String(ports.ingress),
           "--admin-port", String(ports.admin)
-        ] + (secureCookies ? [] : ["--insecure-cookies"])
+        ] + (exposure == .tailnet ? [] : ["--insecure-cookies"])
       process.standardInput = FileHandle.nullDevice
 
       let logURL = URL(fileURLWithPath: databasePath).deletingLastPathComponent()
@@ -55,7 +65,8 @@ struct MuxProcessController: Sendable {
         projectID: project.id,
         pid: Int(process.processIdentifier),
         ingressPort: ports.ingress,
-        adminPort: ports.admin
+        adminPort: ports.admin,
+        exposure: exposure
       )
       do {
         try await database.write { database in
@@ -89,6 +100,14 @@ struct MuxProcessController: Sendable {
         .where { $0.projectID.eq(projectID) && $0.endedAt.is(nil) }
         .order { $0.createdAt.desc() }
         .fetchOne(database)
+    }
+  }
+
+  private func setExposure(_ exposure: ProjectExposure, of id: UUIDV7) async throws {
+    try await database.write { database in
+      try MuxRunRecord.find(id)
+        .update { $0.exposure = #bind(exposure) }
+        .execute(database)
     }
   }
 

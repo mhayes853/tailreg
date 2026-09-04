@@ -75,9 +75,10 @@ struct UpCoordinator: Sendable {
       executableURL: executableURL,
       terminator: terminator
     )
+    let exposure: ProjectExposure = request.localOnly ? .local : .tailnet
     let (runtime, muxWasStarted) = try await muxController.ensureRunning(
       for: project.record,
-      secureCookies: !request.localOnly
+      exposure: exposure
     )
     let endpointController = TailnetEndpointController(
       databasePath: databasePath,

@@ -2,10 +2,44 @@ import Foundation
 import SQLiteData
 import TailregCore
 
+/// What is known about a directory, whether or not Tailreg has ever run there.
+///
+/// A project that was never brought up still has a shape — a root, a name, and whatever
+/// `tailreg.toml` configures — and a command that only observes should be able to report it
+/// without writing a record to say it looked.
+public struct InspectedProject: Sendable {
+  public let record: ProjectRecord?
+  public let root: URL
+  public let specification: ProjectSpecification?
+
+  public var name: String {
+    if let record { return record.name }
+    return ResolvedProject.name(of: specification, at: root)
+  }
+}
+
 public struct ResolvedProject: Sendable {
   public let record: ProjectRecord
   public let root: URL
   public let specification: ProjectSpecification?
+
+  /// Reads a directory without recording that it was read.
+  public static func inspect(
+    database: any DatabaseWriter,
+    explicitPath: String?,
+    currentDirectory: URL
+  ) async throws -> InspectedProject {
+    let root = try projectRoot(explicitPath: explicitPath, currentDirectory: currentDirectory)
+    let rootPath = root.path
+    let record = try await database.read { database in
+      try ProjectRecord.where { $0.rootPath.eq(rootPath) }.fetchOne(database)
+    }
+    return InspectedProject(
+      record: record,
+      root: root,
+      specification: try specification(at: root)
+    )
+  }
 
   /// Finds an already-known project without creating one.
   ///
@@ -17,14 +51,17 @@ public struct ResolvedProject: Sendable {
     explicitPath: String?,
     currentDirectory: URL
   ) async throws -> Self? {
-    let root = try projectRoot(explicitPath: explicitPath, currentDirectory: currentDirectory)
-    let rootPath = root.path
-    guard
-      let record = try await database.read({ database in
-        try ProjectRecord.where { $0.rootPath.eq(rootPath) }.fetchOne(database)
-      })
-    else { return nil }
-    return Self(record: record, root: root, specification: try specification(at: root))
+    let inspected = try await inspect(
+      database: database,
+      explicitPath: explicitPath,
+      currentDirectory: currentDirectory
+    )
+    guard let record = inspected.record else { return nil }
+    return Self(
+      record: record,
+      root: inspected.root,
+      specification: inspected.specification
+    )
   }
 
   public static func resolve(
@@ -36,10 +73,7 @@ public struct ResolvedProject: Sendable {
   {
     let root = try projectRoot(explicitPath: explicitPath, currentDirectory: currentDirectory)
     let specification = try specification(at: root)
-    let fallbackName = root.lastPathComponent.isEmpty ? "project" : root.lastPathComponent
-    let name =
-      (specification?.name?.trimmingCharacters(in: .whitespacesAndNewlines))
-      .flatMap { $0.isEmpty ? nil : $0 } ?? fallbackName
+    let name = name(of: specification, at: root)
     let rootPath = root.path
 
     let record = try await database.write { database in
@@ -56,6 +90,13 @@ public struct ResolvedProject: Sendable {
       return project
     }
     return Self(record: record, root: root, specification: specification)
+  }
+
+  /// The project's name: what `tailreg.toml` calls it, else the directory it lives in.
+  static func name(of specification: ProjectSpecification?, at root: URL) -> String {
+    let fallback = root.lastPathComponent.isEmpty ? "project" : root.lastPathComponent
+    return (specification?.name?.trimmingCharacters(in: .whitespacesAndNewlines))
+      .flatMap { $0.isEmpty ? nil : $0 } ?? fallback
   }
 
   private static func specification(at root: URL) throws -> ProjectSpecification? {

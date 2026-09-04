@@ -55,10 +55,28 @@ public struct TailscaleBinding: Sendable, Equatable {
   }
 
   public var url: URL? {
-    guard let scheme = proto.urlScheme else { return nil }
-    let isDefaultPort =
-      (scheme == "https" && tailnetPort == 443) || (scheme == "http" && tailnetPort == 80)
-    let authority = isDefaultPort ? hostname : "\(hostname):\(tailnetPort)"
-    return URL(string: "\(scheme)://\(authority)\(mountPath)")
+    tailscaleURL(
+      hostname: hostname,
+      tailnetPort: tailnetPort,
+      proto: proto,
+      mountPath: mountPath
+    )
   }
+}
+
+/// Builds the URL a serve target is reachable on.
+///
+/// Shared by the live binding and the record of one, so an observed binding and a recorded
+/// binding can never disagree about the URL they describe.
+func tailscaleURL(
+  hostname: String,
+  tailnetPort: Int,
+  proto: TailscaleServeProtocol,
+  mountPath: String
+) -> URL? {
+  guard let scheme = proto.urlScheme else { return nil }
+  let isDefaultPort =
+    (scheme == "https" && tailnetPort == 443) || (scheme == "http" && tailnetPort == 80)
+  let authority = isDefaultPort ? hostname : "\(hostname):\(tailnetPort)"
+  return URL(string: "\(scheme)://\(authority)\(mountPath)")
 }

@@ -10,6 +10,7 @@ extension HTTPExchangeOutcome: QueryBindable, QueryDecodable {}
 extension HTTPExchangeBodyDirection: QueryBindable, QueryDecodable {}
 extension MuxRoutePathMode: QueryBindable, QueryDecodable {}
 extension ApplicationOwnership: QueryBindable, QueryDecodable {}
+extension ProjectExposure: QueryBindable, QueryDecodable {}
 
 @Table("bindings")
 public struct TailscaleBindingRecord: Hashable, Sendable {
@@ -49,6 +50,16 @@ public struct TailscaleBindingRecord: Hashable, Sendable {
   }
 
   public var isLive: Bool { endedAt == nil }
+
+  /// The URL this binding was recorded as serving.
+  public var url: URL? {
+    tailscaleURL(
+      hostname: hostname,
+      tailnetPort: tailnetPort,
+      proto: proto,
+      mountPath: mountPath
+    )
+  }
 
   func claims(_ binding: TailscaleBinding) -> Bool {
     binding.tailnetPort == tailnetPort
@@ -182,6 +193,18 @@ public struct ProjectRecord: Hashable, Sendable {
   }
 }
 
+/// How a project runtime was published.
+///
+/// This is recorded rather than inferred from whether a binding exists. The two states are
+/// otherwise indistinguishable after the fact, and a binding that has gone missing is exactly
+/// the fault an observing command needs to be able to name.
+public enum ProjectExposure: String, Codable, Equatable, Sendable {
+  /// Reachable on the tailnet through a root Tailscale binding.
+  case tailnet
+  /// Reachable only on the MUX's loopback listener.
+  case local
+}
+
 @Table("muxRuns")
 public struct MuxRunRecord: Hashable, Sendable {
   public let id: UUIDV7
@@ -189,6 +212,7 @@ public struct MuxRunRecord: Hashable, Sendable {
   public var pid: Int
   public var ingressPort: Int
   public var adminPort: Int
+  public var exposure: ProjectExposure
   public var createdAt: Date
   public var endedAt: Date?
 
@@ -198,6 +222,7 @@ public struct MuxRunRecord: Hashable, Sendable {
     pid: Int,
     ingressPort: Int,
     adminPort: Int,
+    exposure: ProjectExposure = .tailnet,
     createdAt: Date = Date(),
     endedAt: Date? = nil
   ) {
@@ -206,6 +231,7 @@ public struct MuxRunRecord: Hashable, Sendable {
     self.pid = pid
     self.ingressPort = ingressPort
     self.adminPort = adminPort
+    self.exposure = exposure
     self.createdAt = createdAt
     self.endedAt = endedAt
   }
@@ -796,13 +822,15 @@ public func tailregDatabaseMigrator() -> DatabaseMigrator {
         "pid"         INTEGER NOT NULL,
         "ingressPort" INTEGER NOT NULL,
         "adminPort"   INTEGER NOT NULL,
+        "exposure"    TEXT    NOT NULL,
         "createdAt"   TEXT    NOT NULL,
         "endedAt"     TEXT,
 
         CHECK ("pid" > 0),
         CHECK ("ingressPort" BETWEEN 1 AND 65535),
         CHECK ("adminPort" BETWEEN 1 AND 65535),
-        CHECK ("ingressPort" <> "adminPort")
+        CHECK ("ingressPort" <> "adminPort"),
+        CHECK ("exposure" IN ('tailnet', 'local'))
       ) STRICT
       """
     )

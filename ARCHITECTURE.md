@@ -1,8 +1,8 @@
 # Architecture: project lifecycle and multiplexer
 
-**Status:** implemented for `tailreg up`, `tailreg down`, project-scoped MUX
-processes, and root Tailscale bindings. The remaining command surface is
-specified in section 7.
+**Status:** implemented for `tailreg up`, `tailreg down`, `tailreg status`,
+project-scoped MUX processes, and root Tailscale bindings. The remaining command
+surface is specified in section 7.
 
 ## 1. Component responsibilities
 
@@ -188,7 +188,7 @@ lock used by `up` and reconcile through the MUX admin API.
 |---|---|---|
 | `tailreg up [APP...]` | Implemented | Reconcile the MUX and root binding, then launch or attach the selected applications and their dependencies. |
 | `tailreg down [APP...]` | Implemented | Stop or detach selected applications. With no application names, tear down the complete current project runtime. |
-| `tailreg status` | Planned | Show desired and observed state for the current project. `--all` lists every known project. |
+| `tailreg status` | Implemented | Show desired and observed state for the current project. `--all` reports every known project; `--json` emits the same report as machine-readable output. |
 | `tailreg logs [APP...]` | Planned | Read or follow retained application output and project-runtime diagnostics. |
 | `tailreg requests [APP...]` | Planned | Query captured HTTP exchanges and their heuristic or model-backed classifications. |
 | `tailreg request ID` | Planned | Show one captured exchange, including available bodies and classification details. |
@@ -236,21 +236,54 @@ be explicit because it crosses project lifecycle boundaries.
 
 ### `tailreg status`
 
-`status` is a read-mostly reconciliation view, not just a database dump. For
-each project it combines configured applications, live route records, MUX-run
-records, Tailscale bindings, PID liveness, and the MUX health endpoint. The
-default human view should show:
+`status` is the three-way join of what `tailreg.toml` configures, what the
+records claim, and what is actually on the machine. The value is in the
+disagreements, so the report names them rather than resolving them.
 
-- project name, root, and public base URL;
-- MUX state and PID;
-- each configured or live application, its route and upstream, whether it is
-  managed or attached, and its process state; and
-- discrepancies such as a stale PID, an unhealthy MUX, a missing binding, or a
-  route that is live but no longer configured.
+Unlike the lifecycle commands, it only reads:
 
-`tailreg status --all` reads every known project. Machine-readable output can
-be added as `--json` without creating a separate listing command; a standalone
-`tailreg projects` command would duplicate that view.
+- It does not take the runtime lock. `down` holds that lock across its whole
+  reconciliation and `FileLock` polls for ten seconds before giving up, so a
+  locking `status` would stall exactly when the runtime is busy or wedged.
+- It does not reclaim abandoned runs. `up` and `down` end live records whose
+  process is gone; doing that here would erase the discrepancy the report exists
+  to show. The same verdict is computed and reported instead.
+- It does not ask Tailscale anything. `TailscaleBinder.bindings()` shells out
+  twice and reconciles binding records as it goes, which would make an observing
+  command both a writer and a hostage to the daemon being up. The recorded
+  binding is read directly, and a binding that should exist but does not is
+  reported rather than repaired. The cost is that the report describes the
+  binding Tailreg recorded, not the one `tailscale serve` currently holds.
+
+Every application state is a distinction the runtime already draws, rather than
+one invented for the display: `running`, `stale` for a record whose process is
+provably gone, `unverified` for a managed record with no recorded start time,
+`unreachable` for an attached upstream that is not listening, and `stopped` for
+a configured application with no live run. `unverified` is deliberately not a
+problem: `reclaimAbandoned` leaves those records alone because their identity
+cannot be disproved, and absence of evidence is not a fault.
+
+Two consequences worth stating:
+
+- Exposure is recorded on the MUX run rather than inferred from whether a
+  binding exists. The two readings are otherwise identical after the fact, so a
+  binding that has gone missing would be indistinguishable from a project that
+  was brought up with `--local-only` — and only one of those is a fault.
+- An attached application is judged by probing its upstream. The schema forbids
+  a PID on an attached run, so without the probe such a run would read as
+  running forever, however long ago its process died.
+
+The human view is a set of labelled ASCII tables — `project`, `mux`,
+`applications`, and `problems` when there are any. `--json` renders the same
+report, always as a `projects` array so that `--all` adds elements rather than
+changing the shape. Both views render the same `problems` list, so they cannot
+disagree about whether a project is healthy. `--all` repeats the tables per
+project rather than merging them, which would let the widest project's paths set
+every column width.
+
+Producing a report is the whole job, so `status` exits zero whenever it produced
+one. A project that is down is an ordinary state, and failing on it would make
+the command unusable in a script that also wanted to know about real faults.
 
 ### `tailreg logs`
 
@@ -292,12 +325,12 @@ details:
 - `_exec` creates an application process group and replaces itself with the
   configured executable.
 
-### Persistence needed by the remaining lifecycle commands
+### Persistence for the lifecycle commands
 
 `ProjectRecord`, `MuxRunRecord`, and `MuxRouteRecord` describe the project and
-MUX, but they do not durably describe application process ownership. Before
-`down`, application-aware `status`, and durable `logs` are implemented, add an
-application-run record containing at least:
+MUX, but they do not durably describe application process ownership. `down` and
+application-aware `status` therefore required `AppRunRecord`, and durable `logs`
+will read from it too. It contains at least:
 
 - project and route identity;
 - application name and managed-versus-attached ownership;
@@ -308,6 +341,10 @@ application-run record containing at least:
 The CLI writes this record before publishing the route and ends it during
 normal exit, rollback, or `down`. As with routes, structured GRDB queries are
 enough; no store protocol, actor cache, or global daemon is required.
+
+`MuxRunRecord` additionally records how the runtime was published, because that
+is not recoverable from anything else once the invocation that chose it is
+gone.
 
 ## 8. Failure behavior and deferred work
 
