@@ -1,0 +1,18 @@
+[project]
+name = "teardown"
+
+[apps.api]
+route = "api"
+port = 19112
+command = ["node", "server.mjs"]
+
+[apps.api.environment]
+PORT = "19112"
+
+[apps.web]
+route = "web"
+port = 19111
+command = ["node", "server.mjs"]
+
+[apps.web.environment]
+PORT = "19111"

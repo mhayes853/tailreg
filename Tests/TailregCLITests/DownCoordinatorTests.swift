@@ -43,7 +43,9 @@ struct `Down coordinator tests` {
     #expect(result.applications.map(\.name) == ["web"])
     #expect(result.applications.first?.outcome == .stopped)
     #expect(result.isClean)
-    #expect(process.hasExited)
+    // Awaited rather than read: `down` observes the exit by probing, which happens before the
+    // launcher's own waiter records it, so reading `hasExited` here would race that waiter.
+    #expect(await process.waitForExit().wasTerminatedBySignal)
     #expect(try context.liveRunNames(project) == [])
   }
 
@@ -97,7 +99,7 @@ struct `Down coordinator tests` {
       .run(DownRequest(applicationNames: ["web"]))
 
     #expect(result.applications.map(\.name) == ["web"])
-    #expect(web.hasExited)
+    #expect(await web.waitForExit().wasTerminatedBySignal)
     #expect(api.hasExited == false)
     #expect(try context.liveRunNames(project) == ["api"])
     api.terminateProcessGroup()
