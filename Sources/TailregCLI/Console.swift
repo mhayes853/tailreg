@@ -1,7 +1,13 @@
 import Foundation
 
 /// Serialises everything the CLI prints, so lines from concurrent supervisors do not interleave.
+///
+/// A global actor rather than an instance per coordinator: two instances would each be ordered
+/// internally and still interleave with each other on the same terminal.
+@globalActor
 actor Console {
+  static let shared = Console()
+
   func write(_ message: String, toStandardError: Bool = false) {
     let data = Data((message + "\n").utf8)
     try? (toStandardError ? FileHandle.standardError : FileHandle.standardOutput)

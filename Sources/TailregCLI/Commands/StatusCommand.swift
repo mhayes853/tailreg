@@ -37,6 +37,6 @@ public struct StatusCommand: AsyncParsableCommand {
       json
       ? try StatusJSONRenderer().render(report)
       : StatusTextRenderer().render(report)
-    await Console().write(output)
+    await Console.shared.write(output)
   }
 }

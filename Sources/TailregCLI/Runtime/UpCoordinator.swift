@@ -40,7 +40,7 @@ struct UpCoordinator: Sendable {
   private let executableURL: URL
   private let environment: [String: String]
   private let currentDirectory: URL
-  private let console = Console()
+  private let console = Console.shared
 
   init(
     databasePath: String = defaultTailregDatabasePath(),
