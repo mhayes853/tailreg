@@ -26,7 +26,7 @@ struct MuxProcessController: Sendable {
     return try await lock.withLock(.exclusive) {
       if var existing = try await liveRun(for: project.id) {
         let client = MuxAdminClient(port: existing.adminPort)
-        if processIsAlive(existing.pid), await client.isReady() {
+        if existing.hasMatchingProcess, await client.isReady() {
           // An adopted runtime is about to be published the way *this* invocation asked for, so
           // the record follows the request rather than the invocation that happened to start it.
           if existing.exposure != exposure {
@@ -64,6 +64,7 @@ struct MuxProcessController: Sendable {
       let run = MuxRunRecord(
         projectID: project.id,
         pid: Int(process.processIdentifier),
+        processStartedAt: processStartTime(of: process.processIdentifier),
         ingressPort: ports.ingress,
         adminPort: ports.admin,
         exposure: exposure
@@ -87,20 +88,22 @@ struct MuxProcessController: Sendable {
   /// The MUX is signalled as a single process rather than a group: it has no children of its own,
   /// and whether the spawning API makes it a group leader is platform-dependent. It is also not
   /// necessarily this process's child, so its exit can only be observed by probing.
+  ///
+  /// A recorded PID whose process no longer matches is not signalled: the number may since have
+  /// been handed to something unrelated. The record is ended either way, so the project reads as
+  /// down.
   @discardableResult
   func stop(_ run: MuxRunRecord) async throws -> TerminationOutcome {
-    let outcome = await terminator.terminate(.process(pid_t(run.pid)), observing: .observed)
+    var outcome = TerminationOutcome.alreadyExited
+    if run.hasMatchingProcess {
+      outcome = await terminator.terminate(.process(pid_t(run.pid)), observing: .observed)
+    }
     try await end(run.id)
     return outcome
   }
 
   func liveRun(for projectID: UUIDV7) async throws -> MuxRunRecord? {
-    try await database.read { database in
-      try MuxRunRecord
-        .where { $0.projectID.eq(projectID) && $0.endedAt.is(nil) }
-        .order { $0.createdAt.desc() }
-        .fetchOne(database)
-    }
+    try await database.read { database in try MuxRunRecord.live(for: projectID).fetchOne(database) }
   }
 
   private func setExposure(_ exposure: ProjectExposure, of id: UUIDV7) async throws {
@@ -123,7 +126,7 @@ struct MuxProcessController: Sendable {
     let client = MuxAdminClient(port: run.adminPort)
     for _ in 0..<300 {
       if await client.isReady() { return }
-      guard processIsAlive(run.pid) else { throw MuxRuntimeError.exitedBeforeReady }
+      guard run.hasMatchingProcess else { throw MuxRuntimeError.exitedBeforeReady }
       try await Task.sleep(for: .milliseconds(100))
     }
     throw MuxRuntimeError.readinessTimedOut
@@ -144,13 +147,6 @@ struct MuxProcessController: Sendable {
     }
     throw MuxRuntimeError.noLocalPorts
   }
-}
-
-func processIsAlive(_ value: some BinaryInteger) -> Bool {
-  let pid = pid_t(truncatingIfNeeded: value)
-  guard pid > 0 else { return false }
-  if kill(pid, 0) == 0 { return true }
-  return errno == EPERM
 }
 
 enum MuxRuntimeError: Error, CustomStringConvertible {

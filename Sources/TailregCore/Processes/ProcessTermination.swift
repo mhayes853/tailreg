@@ -43,10 +43,7 @@ public enum TerminationTarget: Hashable, Sendable {
   /// Whether signalling this target would still reach something.
   ///
   /// `EPERM` counts as running: the target exists but belongs to another user.
-  var isRunning: Bool {
-    if kill(signalTarget, 0) == 0 { return true }
-    return errno == EPERM
-  }
+  var isRunning: Bool { signalReaches(signalTarget) }
 }
 
 /// How a caller learns that the target stopped.

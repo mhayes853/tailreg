@@ -177,8 +177,8 @@ struct `Status coordinator tests` {
     #expect(status.problems.map(\.kind) == [.notConfigured])
   }
 
-  /// The MUX record carries a PID with no start time beside it, so a PID that is merely alive is
-  /// weaker evidence than an admin API that answers.
+  /// A matching process only proves a MUX was started; an admin API that answers proves one is
+  /// serving. The weaker evidence is reported as such.
   @Test
   func `A MUX that does not answer is unreachable while its process lives`() async throws {
     let context = try Context()
@@ -273,6 +273,7 @@ struct `Status coordinator tests` {
       let runtime = MuxRunRecord(
         projectID: project.id,
         pid: Int(getpid()),
+        processStartedAt: processStartTime(of: getpid()),
         ingressPort: 39_428,
         adminPort: 39_429,
         exposure: exposure

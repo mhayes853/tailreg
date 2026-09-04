@@ -1,6 +1,7 @@
 import Foundation
 import TOML
 import TailregCore
+import TailregMultiplexer
 
 public struct ProjectSpecification: Equatable, Sendable {
   public let name: String?
@@ -112,16 +113,7 @@ public struct ApplicationSpecification: Equatable, Sendable {
   public let isExposed: Bool
   public let pathMode: MuxRoutePathMode
 
-  public var listenerPort: PortNumber? {
-    if let port { return port }
-    guard let attachURL else { return nil }
-    if let explicitPort = attachURL.port { return PortNumber(explicitPort) }
-    switch attachURL.scheme {
-    case "http": return PortNumber(80)
-    case "https": return PortNumber(443)
-    default: return nil
-    }
-  }
+  public var listenerPort: PortNumber? { port ?? attachURL?.listenerPort }
 
   var upstreamURL: URL {
     guard let upstream = attachURL ?? port.flatMap({ URL(string: "http://127.0.0.1:\($0)") }) else {
@@ -205,16 +197,8 @@ public struct ApplicationSpecification: Equatable, Sendable {
     if isExposed, listenerPort == nil {
       throw ProjectSpecificationError.missingPort(name)
     }
-    if let route {
-      let characters = Array(route)
-      guard route == route.lowercased(), route.count <= 64,
-        let first = characters.first, let last = characters.last,
-        first.isLetter || first.isNumber,
-        last.isLetter || last.isNumber,
-        characters.allSatisfy({ $0.isLowercase || $0.isNumber || $0 == "-" })
-      else {
-        throw ProjectSpecificationError.invalidRoute(application: name, route: route)
-      }
+    if let route, !MuxRouteName.isValid(route) {
+      throw ProjectSpecificationError.invalidRoute(application: name, route: route)
     }
   }
 }

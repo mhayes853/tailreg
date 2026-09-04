@@ -46,10 +46,7 @@ enum MuxRouteQueries {
   }
 
   static func live(muxID: UUIDV7, in database: Database) throws -> [MuxRouteRecord] {
-    try MuxRouteRecord
-      .where { $0.muxID.eq(muxID) && $0.endedAt.is(nil) }
-      .order { ($0.route, $0.createdAt) }
-      .fetchAll(database)
+    try MuxRouteRecord.live(muxID: muxID).fetchAll(database)
   }
 
   static func live(
@@ -57,9 +54,7 @@ enum MuxRouteQueries {
     route: String,
     in database: Database
   ) throws -> MuxRouteRecord? {
-    try MuxRouteRecord
-      .where { $0.muxID.eq(muxID) && $0.route.eq(route) && $0.endedAt.is(nil) }
-      .fetchOne(database)
+    try MuxRouteRecord.live(muxID: muxID, route: route).fetchOne(database)
   }
 
   static func register(
@@ -78,13 +73,11 @@ enum MuxRouteQueries {
     let occupiedRoutes = Set(try live(muxID: muxID, in: database).map(\.route))
     let route: String
     if let requestedRoute {
-      guard let normalizedRoute = normalize(route: requestedRoute) else {
-        throw MuxRouteError.invalidRoute
+      guard MuxRouteName.isValid(requestedRoute) else { throw MuxRouteError.invalidRoute }
+      guard !occupiedRoutes.contains(requestedRoute) else {
+        throw MuxRouteError.routeAlreadyExists(requestedRoute)
       }
-      guard !occupiedRoutes.contains(normalizedRoute) else {
-        throw MuxRouteError.routeAlreadyExists(normalizedRoute)
-      }
-      route = normalizedRoute
+      route = requestedRoute
     } else {
       var suffix = 0
       var candidate = "\(normalizedName)-\(suffix)"
@@ -159,17 +152,20 @@ enum MuxRouteQueries {
     guard !normalized.isEmpty else { return nil }
     return String(normalized.prefix(48))
   }
+}
 
-  private static func normalize(route: String) -> String? {
-    guard route == route.lowercased(), route.count <= 64 else { return nil }
+/// The shape of an explicitly requested route: what may appear as the first path segment.
+///
+/// The CLI validates `tailreg.toml` against this before anything is launched, and the MUX
+/// validates registrations against it, so the two cannot disagree about what a route may be.
+public enum MuxRouteName {
+  public static func isValid(_ route: String) -> Bool {
+    guard route == route.lowercased(), route.count <= 64 else { return false }
     let characters = Array(route)
     guard let first = characters.first, let last = characters.last,
       first.isLetter || first.isNumber,
-      last.isLetter || last.isNumber,
-      characters.allSatisfy({ $0.isLowercase || $0.isNumber || $0 == "-" })
-    else {
-      return nil
-    }
-    return route
+      last.isLetter || last.isNumber
+    else { return false }
+    return characters.allSatisfy { $0.isLowercase || $0.isNumber || $0 == "-" }
   }
 }

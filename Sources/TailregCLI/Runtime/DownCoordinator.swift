@@ -186,19 +186,15 @@ struct DownCoordinator: Sendable {
   ) async -> ApplicationDownOutcome {
     var outcome: ApplicationDownOutcome = run.ownership == .attached ? .detached : .alreadyDown
 
-    if run.ownership == .managed, let pid = run.pid, let group = run.processGroupID {
-      // A recorded PID is not evidence on its own: the kernel recycles PID numbers, and these
-      // records outlive reboots. Without a matching start time the process is treated as gone
-      // rather than signalled, so `down` never reaches an unrelated process group.
-      if processMatches(pid: Int32(pid), startedAt: run.processStartedAt),
-        let target = ProcessGroupID(group)
-      {
-        switch await terminator.terminate(.processGroup(target), observing: .observed) {
-        case .alreadyExited: outcome = .alreadyDown
-        case .exitedOnTermination: outcome = .stopped
-        case .forced(let elapsed): outcome = .forced(elapsed)
-        case .unresponsive: outcome = .stillRunning("the process group survived SIGKILL")
-        }
+    // A recorded PID is not evidence on its own: the kernel recycles PID numbers, and these
+    // records outlive reboots. Without a matching start time the process is treated as gone
+    // rather than signalled, so `down` never reaches an unrelated process group.
+    if run.hasMatchingProcess, let target = run.processGroupID.flatMap(ProcessGroupID.init) {
+      switch await terminator.terminate(.processGroup(target), observing: .observed) {
+      case .alreadyExited: outcome = .alreadyDown
+      case .exitedOnTermination: outcome = .stopped
+      case .forced(let elapsed): outcome = .forced(elapsed)
+      case .unresponsive: outcome = .stillRunning("the process group survived SIGKILL")
       }
     }
 

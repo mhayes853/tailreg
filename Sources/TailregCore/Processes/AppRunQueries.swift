@@ -9,6 +9,16 @@ extension AppRunRecord.TableColumns {
 }
 
 extension AppRunRecord {
+  /// Whether `pid` still names the process this run recorded.
+  ///
+  /// False for an attached run, which has no process, and for a managed run whose start time was
+  /// never recorded: an unverifiable process is treated as not ours, so nothing is ever signalled
+  /// on the strength of a PID number alone.
+  public var hasMatchingProcess: Bool {
+    guard ownership == .managed, let pid else { return false }
+    return processMatches(pid: Int32(pid), startedAt: processStartedAt)
+  }
+
   public static func live(for projectID: UUIDV7) -> SelectOf<AppRunRecord> {
     AppRunRecord
       .where { $0.belongs(to: projectID) && $0.endedAt.is(nil) }
@@ -54,11 +64,9 @@ extension AppRunRecord {
     let candidates = try live(for: projectID).fetchAll(db)
     var reclaimed: [AppRunRecord] = []
     for candidate in candidates {
-      guard candidate.ownership == .managed,
-        let pid = candidate.pid,
-        let witness = candidate.processStartedAt
-      else { continue }
-      guard !processMatches(pid: Int32(pid), startedAt: witness) else { continue }
+      // Only a process that can be disproved is reclaimed. `hasMatchingProcess` is also false for
+      // a run that merely cannot be verified, which must be left alone.
+      guard candidate.processStartedAt != nil, !candidate.hasMatchingProcess else { continue }
       if try end(candidate.id, at: date, in: db) { reclaimed.append(candidate) }
     }
     return reclaimed

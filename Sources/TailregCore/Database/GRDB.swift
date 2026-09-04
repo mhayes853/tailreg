@@ -210,6 +210,10 @@ public struct MuxRunRecord: Hashable, Sendable {
   public let id: UUIDV7
   public var projectID: UUIDV7
   public var pid: Int
+  /// Identifies the process behind `pid`, so a recycled PID is never mistaken for this MUX.
+  /// Nil when the start time could not be read, which leaves the run unverifiable rather than
+  /// assumed live.
+  public var processStartedAt: Int64?
   public var ingressPort: Int
   public var adminPort: Int
   public var exposure: ProjectExposure
@@ -220,6 +224,7 @@ public struct MuxRunRecord: Hashable, Sendable {
     id: UUIDV7 = UUIDV7(),
     projectID: UUIDV7,
     pid: Int,
+    processStartedAt: Int64? = nil,
     ingressPort: Int,
     adminPort: Int,
     exposure: ProjectExposure = .tailnet,
@@ -229,6 +234,7 @@ public struct MuxRunRecord: Hashable, Sendable {
     self.id = id
     self.projectID = projectID
     self.pid = pid
+    self.processStartedAt = processStartedAt
     self.ingressPort = ingressPort
     self.adminPort = adminPort
     self.exposure = exposure
@@ -817,14 +823,15 @@ public func tailregDatabaseMigrator() -> DatabaseMigrator {
     try #sql(
       """
       CREATE TABLE "muxRuns" (
-        "id"          TEXT    NOT NULL PRIMARY KEY,
-        "projectID"   TEXT    NOT NULL REFERENCES "projects"("id") ON DELETE CASCADE,
-        "pid"         INTEGER NOT NULL,
-        "ingressPort" INTEGER NOT NULL,
-        "adminPort"   INTEGER NOT NULL,
-        "exposure"    TEXT    NOT NULL,
-        "createdAt"   TEXT    NOT NULL,
-        "endedAt"     TEXT,
+        "id"               TEXT    NOT NULL PRIMARY KEY,
+        "projectID"        TEXT    NOT NULL REFERENCES "projects"("id") ON DELETE CASCADE,
+        "pid"              INTEGER NOT NULL,
+        "processStartedAt" INTEGER,
+        "ingressPort"      INTEGER NOT NULL,
+        "adminPort"        INTEGER NOT NULL,
+        "exposure"         TEXT    NOT NULL,
+        "createdAt"        TEXT    NOT NULL,
+        "endedAt"          TEXT,
 
         CHECK ("pid" > 0),
         CHECK ("ingressPort" BETWEEN 1 AND 65535),

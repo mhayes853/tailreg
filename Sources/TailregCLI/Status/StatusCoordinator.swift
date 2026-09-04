@@ -104,8 +104,12 @@ struct StatusCoordinator: Sendable {
     }
 
     // Three reads that need nothing from each other, against a pool that can serve them at once.
-    async let runtimeRead = liveRuntime(of: record.id, database: database)
-    async let routesRead = liveRoutes(of: record.muxID, database: database)
+    async let runtimeRead = database.read { database in
+      try MuxRunRecord.live(for: record.id).fetchOne(database)
+    }
+    async let routesRead = database.read { database in
+      try MuxRouteRecord.live(muxID: record.muxID).fetchAll(database)
+    }
     async let runsRead = database.read { database in
       try AppRunRecord.live(for: record.id).fetchAll(database)
     }
@@ -146,17 +150,16 @@ struct StatusCoordinator: Sendable {
 
   // MARK: - Runtime
 
-  /// Reads the MUX's state, asking the admin API before checking the PID.
+  /// Reads the MUX's state, asking the admin API before checking the process.
   ///
-  /// An answering admin API is the stronger evidence of the two: `MuxRunRecord` records a PID
-  /// with no start time beside it, so a PID that is merely alive could belong to anything the
-  /// kernel has since handed that number to.
+  /// An answering admin API is the stronger evidence of the two: it proves a MUX is serving on
+  /// the recorded port, whereas a matching process only proves one was started.
   private func muxStatus(of runtime: MuxRunRecord?) async -> MuxStatus {
     guard let runtime else { return MuxStatus(state: .notRunning) }
     let state: MuxStatus.State
     if await muxIsReady(runtime.adminPort) {
       state = .running
-    } else if processIsAlive(runtime.pid) {
+    } else if runtime.hasMatchingProcess {
       state = .unreachable
     } else {
       state = .stale
@@ -249,12 +252,12 @@ struct StatusCoordinator: Sendable {
   ) async -> ApplicationStatus.State {
     switch run.ownership {
     case .managed:
-      guard let pid = run.pid, let startedAt = run.processStartedAt else { return .unverified }
-      return processMatches(pid: Int32(pid), startedAt: startedAt) ? .running : .stale
+      guard run.processStartedAt != nil else { return .unverified }
+      return run.hasMatchingProcess ? .running : .stale
     case .attached:
       guard let upstream = route.flatMap({ URL(string: $0.upstreamURL) }),
         let host = upstream.host,
-        let port = port(of: upstream)
+        let port = upstream.listenerPort
       else { return .unverified }
       return await portProbe.isListening(host: host, port: port) ? .running : .unreachable
     }
@@ -373,29 +376,6 @@ struct StatusCoordinator: Sendable {
 
   // MARK: - Queries
 
-  private func liveRuntime(
-    of projectID: UUIDV7,
-    database: any DatabaseWriter
-  ) async throws -> MuxRunRecord? {
-    try await database.read { database in
-      try MuxRunRecord
-        .where { $0.projectID.eq(projectID) && $0.endedAt.is(nil) }
-        .order { $0.createdAt.desc() }
-        .fetchOne(database)
-    }
-  }
-
-  private func liveRoutes(
-    of muxID: UUIDV7,
-    database: any DatabaseWriter
-  ) async throws -> [MuxRouteRecord] {
-    try await database.read { database in
-      try MuxRouteRecord
-        .where { $0.muxID.eq(muxID) && $0.endedAt.is(nil) }
-        .order { ($0.route, $0.createdAt) }
-        .fetchAll(database)
-    }
-  }
 
   private func liveBinding(
     for runtime: MuxRunRecord?,
@@ -413,19 +393,10 @@ struct StatusCoordinator: Sendable {
 
   // MARK: - Upstreams
 
-  private func port(of upstream: URL) -> PortNumber? {
-    if let explicit = upstream.port { return PortNumber(explicit) }
-    switch upstream.scheme {
-    case "http": return PortNumber(80)
-    case "https": return PortNumber(443)
-    default: return nil
-    }
-  }
-
   private func authority(of route: RouteStatus?) -> String {
     guard let upstream = route.flatMap({ URL(string: $0.upstreamURL) }),
       let host = upstream.host,
-      let port = port(of: upstream)
+      let port = upstream.listenerPort
     else { return route?.upstreamURL ?? "the upstream" }
     return "\(host):\(port)"
   }

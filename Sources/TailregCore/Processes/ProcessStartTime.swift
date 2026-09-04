@@ -36,6 +36,23 @@ public func processMatches(pid: Int32, startedAt witness: Int64?) -> Bool {
   return current == witness
 }
 
+/// Whether a PID currently names a process at all.
+///
+/// This says nothing about *which* process: the number may have been recycled since it was
+/// recorded. Prefer `processMatches` wherever a start time was recorded alongside the PID.
+public func processIsAlive(_ value: some BinaryInteger) -> Bool {
+  let pid = pid_t(truncatingIfNeeded: value)
+  guard pid > 0 else { return false }
+  return signalReaches(pid)
+}
+
+/// Whether `kill` would deliver to this target. `EPERM` counts: the target exists but belongs to
+/// another user.
+func signalReaches(_ target: pid_t) -> Bool {
+  if kill(target, 0) == 0 { return true }
+  return errno == EPERM
+}
+
 #if canImport(Darwin)
 
   private func darwinProcessStartTime(of pid: Int32) -> Int64? {
