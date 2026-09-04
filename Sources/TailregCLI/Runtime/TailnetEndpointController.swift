@@ -1,14 +1,18 @@
 import Foundation
 import TailregCore
 
+/// Publishes a project MUX on the tailnet, and takes it back down.
 struct TailnetEndpointController: Sendable {
   let databasePath: String
-  let localOnly: Bool
-  let requestedPort: PortNumber?
   let environment: [String: String]
 
-  func ensure(ingressPort: Int) async throws -> URL {
-    if localOnly {
+  /// Returns where the project is reachable, binding it to the tailnet first when asked to.
+  func ensure(
+    ingressPort: Int,
+    exposure: ProjectExposure,
+    requestedPort: PortNumber? = nil
+  ) async throws -> URL {
+    if exposure == .local {
       return URL(string: "http://127.0.0.1:\(ingressPort)/")!
     }
 
@@ -33,7 +37,6 @@ struct TailnetEndpointController: Sendable {
   }
 
   func remove(ingressPort: Int) async throws {
-    guard !localOnly else { return }
     let binder = try makeBinder()
     _ = try await binder.unbind(localPort: ingressPort)
   }

@@ -189,13 +189,7 @@ struct `Down coordinator E2E tests` {
         environment: environment,
         currentDirectory: fixture
       )
-      .run(
-        DownRequest(
-          projectPath: fixture.path,
-          applicationNames: applications,
-          localOnly: true
-        )
-      )
+      .run(DownRequest(projectPath: fixture.path, applicationNames: applications))
     }
 
     func runtime() async throws -> MuxRunRecord? {

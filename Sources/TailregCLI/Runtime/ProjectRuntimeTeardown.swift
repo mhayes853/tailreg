@@ -30,10 +30,15 @@ struct ProjectRuntimeTeardown: Sendable {
     let live = (try? await admin.routes()) ?? []
     guard live.isEmpty else { return .stillInUse(routes: live.count) }
 
-    do {
-      try await endpointController.remove(ingressPort: runtime.ingressPort)
-    } catch {
-      return .failed("the Tailscale binding could not be removed: \(error)")
+    // Whether Tailscale is involved follows what the runtime recorded, not what this invocation
+    // was told. A local runtime has no binding to remove, and asking Tailscale about one would
+    // make stopping it depend on a daemon it never needed.
+    if runtime.exposure == .tailnet {
+      do {
+        try await endpointController.remove(ingressPort: runtime.ingressPort)
+      } catch {
+        return .failed("the Tailscale binding could not be removed: \(error)")
+      }
     }
     do {
       _ = try await muxController.stop(runtime)

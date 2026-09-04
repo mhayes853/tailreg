@@ -87,13 +87,15 @@ struct UpCoordinator: Sendable {
     }
     let endpointController = TailnetEndpointController(
       databasePath: databasePath,
-      localOnly: request.localOnly,
-      requestedPort: request.tailnetPort,
       environment: environment
     )
     let baseURL: URL
     do {
-      baseURL = try await endpointController.ensure(ingressPort: runtime.ingressPort)
+      baseURL = try await endpointController.ensure(
+        ingressPort: runtime.ingressPort,
+        exposure: exposure,
+        requestedPort: request.tailnetPort
+      )
     } catch {
       if muxWasStarted { try? await muxController.stop(runtime) }
       throw error

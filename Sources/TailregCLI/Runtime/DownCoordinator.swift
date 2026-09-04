@@ -7,7 +7,6 @@ import UUIDV7
 struct DownRequest: Sendable {
   var projectPath: String?
   var applicationNames: [String] = []
-  var localOnly = false
 }
 
 /// What happened to one application.
@@ -127,25 +126,11 @@ struct DownCoordinator: Sendable {
       known: Set(known)
     )
 
+    // No MUX means no routes to clear; the records are still ended so the project reads as down.
     let controller = muxController(database: database, terminator: terminator)
-    guard let runtime = try await controller.liveRun(for: project.record.id) else {
-      // No MUX means no routes to clear; the records are ended so the project reads as down.
-      var outcomes: [(name: String, outcome: ApplicationDownOutcome)] = []
-      for run in selected {
-        outcomes.append((run.name, await stop(run, database: database, terminator: terminator)))
-      }
-      let names = Set(selected.map(\.name))
-      for name in request.applicationNames where !names.contains(name) {
-        outcomes.append((name, .alreadyDown))
-      }
-      return DownResult(
-        projectName: project.record.name,
-        applications: outcomes.sorted { $0.name < $1.name },
-        runtime: nil
-      )
-    }
+    let runtime = try await controller.liveRun(for: project.record.id)
+    let admin = runtime.map { MuxAdminClient(port: $0.adminPort) }
 
-    let admin = MuxAdminClient(port: runtime.adminPort)
     var outcomes: [(name: String, outcome: ApplicationDownOutcome)] = []
     for run in selected {
       let outcome = await stop(run, database: database, terminator: terminator, admin: admin)
@@ -156,20 +141,22 @@ struct DownCoordinator: Sendable {
       outcomes.append((name, .alreadyDown))
     }
 
-    let teardown = ProjectRuntimeTeardown(
-      admin: admin,
-      muxController: muxController(database: database, terminator: terminator),
-      endpointController: TailnetEndpointController(
-        databasePath: databasePath,
-        localOnly: request.localOnly,
-        requestedPort: nil,
-        environment: environment
+    var teardown: ProjectRuntimeTeardown.Outcome?
+    if let runtime, let admin {
+      teardown = await ProjectRuntimeTeardown(
+        admin: admin,
+        muxController: controller,
+        endpointController: TailnetEndpointController(
+          databasePath: databasePath,
+          environment: environment
+        )
       )
-    )
+      .stopIfUnused(runtime)
+    }
     return DownResult(
       projectName: project.record.name,
       applications: outcomes.sorted { $0.name < $1.name },
-      runtime: await teardown.stopIfUnused(runtime)
+      runtime: teardown
     )
   }
 

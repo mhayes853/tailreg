@@ -214,7 +214,9 @@ rather than re-reading commands from TOML:
   the one recorded with it. These records outlive reboots, and the kernel
   recycles PID numbers.
 - Once the final route is gone, the command removes the project's root
-  Tailscale binding, stops the MUX, and ends the runtime records.
+  Tailscale binding, stops the MUX, and ends the runtime records. Whether
+  Tailscale is involved follows the exposure recorded on the MUX run, so
+  stopping a `--local-only` project never depends on the Tailscale daemon.
 
 The operation is idempotent. An application or project that is already down is
 reported as such and is not an error, including for ad hoc applications that

@@ -115,7 +115,7 @@ struct `Status coordinator E2E tests` {
         environment: environment,
         currentDirectory: fixture
       )
-      _ = try await coordinator.run(DownRequest(projectPath: fixture.path, localOnly: true))
+      _ = try await coordinator.run(DownRequest(projectPath: fixture.path))
     }
 
     /// The real coordinator, with nothing stubbed: the MUX admin API and the upstream probes are

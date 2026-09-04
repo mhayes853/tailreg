@@ -11,9 +11,6 @@ public struct DownCommand: AsyncParsableCommand {
   @Option(name: .long, help: "Project directory or tailreg.toml path.")
   var project: String?
 
-  @Flag(name: .long, help: "Do not change Tailscale when removing the project's binding.")
-  var localOnly = false
-
   @Argument(help: "Configured or running application names. Omit to stop the whole project.")
   var applications: [String] = []
 
@@ -28,11 +25,7 @@ public struct DownCommand: AsyncParsableCommand {
     let result: DownResult
     do {
       result = try await coordinator.run(
-        DownRequest(
-          projectPath: project,
-          applicationNames: applications,
-          localOnly: localOnly
-        )
+        DownRequest(projectPath: project, applicationNames: applications)
       )
     } catch let error as DownError {
       guard case .unknownApplication = error else { throw error }
