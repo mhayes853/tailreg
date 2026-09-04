@@ -40,18 +40,24 @@ struct UpCoordinator: Sendable {
   private let executableURL: URL
   private let environment: [String: String]
   private let currentDirectory: URL
+  private let portProbe: any PortProbe
+  private let listenerLocator: any ListeningProcessLocator
   private let console = Console.shared
 
   init(
     databasePath: String = defaultTailregDatabasePath(),
     executableURL: URL = URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL,
     environment: [String: String] = ProcessInfo.processInfo.environment,
-    currentDirectory: URL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+    currentDirectory: URL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath),
+    portProbe: any PortProbe = SystemPortProbe(),
+    listenerLocator: any ListeningProcessLocator = SystemListeningProcessLocator()
   ) {
     self.databasePath = databasePath
     self.executableURL = executableURL
     self.environment = environment
     self.currentDirectory = currentDirectory
+    self.portProbe = portProbe
+    self.listenerLocator = listenerLocator
   }
 
   func run(
@@ -256,6 +262,11 @@ struct UpCoordinator: Sendable {
     var process: LaunchedProcess?
     var outputTasks: [Task<Void, Never>] = []
     if var command = specification.command {
+      // A port that already answers would pass the readiness probe on its first tick, and the
+      // route would be published to whatever is there rather than to the process about to start.
+      if let port = specification.listenerPort {
+        try await requireFree(port: port, application: specification.name)
+      }
       command.environment = environment.merging(command.environment) { _, configured in configured }
       command.environment["TAILREG_PROJECT_URL"] = baseURL.absoluteString
       if let route = specification.route {
@@ -278,6 +289,11 @@ struct UpCoordinator: Sendable {
     do {
       if let port = specification.listenerPort {
         try await waitForListener(port: port, process: process, application: specification.name)
+        // The pre-launch check races with anything else that wants the port. The listener that
+        // finally answered has to be the process this invocation started.
+        if let process {
+          try await requireOwnership(of: port, by: process, application: specification.name)
+        }
       }
 
       // Recorded before the route is published: a run without a route can be reconciled later,
@@ -387,17 +403,52 @@ struct UpCoordinator: Sendable {
     )
   }
 
+  private func requireFree(port: PortNumber, application: String) async throws {
+    guard await portProbe.isListening(port: port) else { return }
+    let owner = try? await listenerLocator.processes(listeningOn: port).first
+    throw UpError.portInUse(application: application, port: port, owner: owner)
+  }
+
+  /// Confirms the listener on `port` belongs to the launched process.
+  ///
+  /// The launched process leads its own group, so anything it forked to hold the socket is in
+  /// that group; a direct parent link covers a child that re-parented itself. A scan that cannot
+  /// run at all is reported rather than treated as proof either way.
+  private func requireOwnership(
+    of port: PortNumber,
+    by process: LaunchedProcess,
+    application: String
+  ) async throws {
+    let listeners: [ListeningProcess]
+    do {
+      listeners = try await listenerLocator.processes(listeningOn: port)
+    } catch {
+      await console.warning(
+        "could not confirm which process is listening on port \(port): \(error)"
+      )
+      return
+    }
+    let owned = listeners.contains { listener in
+      getpgid(listener.pid) == process.pid || listener.parentPID == process.pid
+    }
+    guard !owned else { return }
+    throw UpError.portOwnedElsewhere(
+      application: application,
+      port: port,
+      owner: listeners.first
+    )
+  }
+
   private func waitForListener(
     port: PortNumber,
     process: LaunchedProcess?,
     application: String
   ) async throws {
     let timeout = try MillisecondsSetting.applicationStartup.resolve(from: environment)
-    let probe = SystemPortProbe()
     let clock = ContinuousClock()
     let deadline = clock.now.advanced(by: timeout)
     while clock.now < deadline {
-      if await probe.isListening(port: port) { return }
+      if await portProbe.isListening(port: port) { return }
       if let process, process.hasExited { throw UpError.exitedBeforeReady(application) }
       try await Task.sleep(for: .milliseconds(100))
     }
@@ -548,9 +599,15 @@ enum UpError: Error, CustomStringConvertible, Sendable {
   case alreadyRunning(String)
   case exitedBeforeReady(String)
   case readinessTimedOut(application: String, port: PortNumber)
+  case portInUse(application: String, port: PortNumber, owner: ListeningProcess?)
+  case portOwnedElsewhere(application: String, port: PortNumber, owner: ListeningProcess?)
 
   var description: String {
     switch self {
+    case .portInUse(let app, let port, let owner):
+      "port \(port) for application '\(app)' is already in use\(Self.describe(owner))"
+    case .portOwnedElsewhere(let app, let port, let owner):
+      "application '\(app)' did not bind port \(port); it is held\(Self.describe(owner))"
     case .configurationRequired: "no tailreg.toml was found for this project"
     case .commandRequiresApplication: "an ad hoc command requires --app"
     case .alreadyRunning(let app): "application '\(app)' is already running in this project"
@@ -558,5 +615,10 @@ enum UpError: Error, CustomStringConvertible, Sendable {
     case .readinessTimedOut(let app, let port):
       "timed out waiting for application '\(app)' on port \(port)"
     }
+  }
+
+  private static func describe(_ owner: ListeningProcess?) -> String {
+    guard let owner else { return " by another process" }
+    return " by \(owner.name ?? "another process") (pid \(owner.pid))"
   }
 }
