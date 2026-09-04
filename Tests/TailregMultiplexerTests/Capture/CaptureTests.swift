@@ -224,6 +224,12 @@ struct `MUX capture tests` {
       name: "web",
       upstream: URL(string: "http://127.0.0.1:3001")!
     )
+    // Both multiplexers run their own restart recovery when they are created, and it abandons
+    // whatever is in progress for their MUX. Letting that land before these exchanges exist keeps
+    // the test about the recorder under test rather than a race with the multiplexers' own.
+    await firstMux.captureRecorder?.flush()
+    await secondMux.captureRecorder?.flush()
+
     let firstExchange = HTTPExchangeRecord(
       routeID: firstRoute.id,
       method: "GET",

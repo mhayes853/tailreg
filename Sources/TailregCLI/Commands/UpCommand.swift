@@ -128,7 +128,7 @@ private enum BackgroundLauncher {
       "TAILREG_BACKGROUND_CHILD": "1",
       "TAILREG_READY_FILE": readyURL.path
     ]) { _, child in child }
-    try process.run()
+    try withDefaultSignalMaskForSpawn { try process.run() }
     try? log.close()
 
     defer { try? FileManager.default.removeItem(at: readyURL) }

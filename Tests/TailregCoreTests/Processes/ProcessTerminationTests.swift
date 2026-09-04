@@ -103,15 +103,8 @@ struct `Process termination tests` {
     }
   }
 
-  /// Foundation's `Process` hands the child the spawning thread's signal mask, and Swift
-  /// concurrency threads block nearly everything. Applications get a clean slate from the `_exec`
-  /// helper, but these tests launch directly, so they clear the mask here in order to exercise
-  /// the terminator rather than mask inheritance.
   private func launch(_ executable: String, _ arguments: String...) throws -> LaunchedProcess {
-    var empty = sigset_t()
-    sigemptyset(&empty)
-    pthread_sigmask(SIG_SETMASK, &empty, nil)
-    return try SystemProcessLauncher()
+    try SystemProcessLauncher()
       .launch(ProcessCommand(executable: executable, arguments: arguments))
   }
 }

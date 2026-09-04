@@ -1,4 +1,3 @@
-import Dispatch
 import Foundation
 import Synchronization
 
@@ -116,11 +115,24 @@ public struct SystemProcessLauncher: ProcessLaunching {
       }
     }
 
-    let state = ProcessLaunchState(process: process)
+    let state = ProcessLaunchState()
+    // Installed before the launch: a short-lived child can be reaped before `run()` returns, and
+    // a handler set afterwards would never be called. Clearing it inside breaks the reference
+    // cycle that keeps the `Process` alive until the child is gone.
+    process.terminationHandler = { finished in
+      finished.terminationHandler = nil
+      state.complete(
+        with: ProcessExit(
+          code: finished.terminationStatus,
+          wasTerminatedBySignal: finished.terminationReason == .uncaughtSignal
+        )
+      )
+    }
 
     do {
-      try process.run()
+      try withDefaultSignalMaskForSpawn { try process.run() }
     } catch {
+      process.terminationHandler = nil
       try? standardOutput.fileHandleForReading.close()
       try? standardError.fileHandleForReading.close()
       throw ProcessLaunchError.launchFailed(
@@ -128,7 +140,6 @@ public struct SystemProcessLauncher: ProcessLaunching {
         message: String(describing: error)
       )
     }
-    state.beginWaiting()
 
     return LaunchedProcess(
       pid: process.processIdentifier,
@@ -167,12 +178,7 @@ private final class ProcessLaunchState: Sendable {
     var waiters: [CheckedContinuation<ProcessExit, Never>] = []
   }
 
-  private let process: Mutex<Process>
   private let storage = Mutex(Storage())
-
-  init(process: Process) {
-    self.process = Mutex(process)
-  }
 
   var hasExited: Bool { storage.withLock { $0.exit != nil } }
 
@@ -188,24 +194,21 @@ private final class ProcessLaunchState: Sendable {
     }
   }
 
-  func beginWaiting() {
-    processLifecycleQueue.async { [self] in
-      let exit = process.withLock {
-        $0.waitUntilExit()
-        return ProcessExit(
-          code: $0.terminationStatus,
-          wasTerminatedBySignal: $0.terminationReason == .uncaughtSignal
-        )
-      }
-      let waiters = storage.withLock { storage -> [CheckedContinuation<ProcessExit, Never>] in
-        guard storage.exit == nil else { return [] }
-        storage.exit = exit
-        defer { storage.waiters.removeAll() }
-        return storage.waiters
-      }
-      for waiter in waiters {
-        waiter.resume(returning: exit)
-      }
+  /// Publishes the exit that `Process` reported once it had reaped the child.
+  ///
+  /// Deliberately not `waitUntilExit()`: on Linux that spins the calling thread's run loop, and a
+  /// run loop with no sources returns immediately, so waiting for a child burns a whole core for
+  /// as long as the child lives. A handful of concurrent children is enough to starve the
+  /// cooperative pool and stall every unrelated task in the process.
+  func complete(with exit: ProcessExit) {
+    let waiters = storage.withLock { storage -> [CheckedContinuation<ProcessExit, Never>] in
+      guard storage.exit == nil else { return [] }
+      storage.exit = exit
+      defer { storage.waiters.removeAll() }
+      return storage.waiters
+    }
+    for waiter in waiters {
+      waiter.resume(returning: exit)
     }
   }
 
@@ -223,8 +226,3 @@ private final class ProcessLaunchState: Sendable {
     }
   }
 }
-
-private let processLifecycleQueue = DispatchQueue(
-  label: "com.tailreg.io.process-launcher.lifecycle",
-  attributes: .concurrent
-)

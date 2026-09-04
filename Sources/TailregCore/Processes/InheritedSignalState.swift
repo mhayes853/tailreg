@@ -34,3 +34,23 @@ private var signalUpperBound: Int32 {
     Int32(_NSIG)
   #endif
 }
+
+/// Runs `spawn` with the calling thread's signal mask emptied, restoring it afterwards.
+///
+/// `posix_spawn`, and so Foundation's `Process`, hands the child the blocked mask of whichever
+/// thread launched it. Swift concurrency worker threads block nearly every signal, so a child
+/// launched from one never observes SIGTERM: a graceful stop degrades into the escalated SIGKILL,
+/// and only when the launch happens to land on such a thread — which is why it presents as
+/// flakiness rather than a consistent failure.
+///
+/// `spawn` must not suspend: the mask belongs to the thread, not the task, so a suspension would
+/// leave an unrelated task running unmasked and restore the mask onto whichever thread resumes.
+public func withDefaultSignalMaskForSpawn<T>(_ spawn: () throws -> T) rethrows -> T {
+  var empty = sigset_t()
+  sigemptyset(&empty)
+  var previous = sigset_t()
+  sigemptyset(&previous)
+  let swapped = pthread_sigmask(SIG_SETMASK, &empty, &previous) == 0
+  defer { if swapped { pthread_sigmask(SIG_SETMASK, &previous, nil) } }
+  return try spawn()
+}
