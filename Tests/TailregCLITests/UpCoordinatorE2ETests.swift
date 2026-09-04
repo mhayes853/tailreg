@@ -15,9 +15,7 @@ struct `Up coordinator E2E tests` {
       .deletingLastPathComponent()
       .deletingLastPathComponent()
     let fixture = packageRoot.appendingPathComponent("Tests/Fixtures/FullStack")
-    let executable = URL(fileURLWithPath: CommandLine.arguments[0])
-      .deletingLastPathComponent()
-      .appendingPathComponent("tailreg")
+    let executable = builtTailregExecutable()
     #expect(FileManager.default.isExecutableFile(atPath: executable.path))
 
     let stateDirectory = FileManager.default.temporaryDirectory

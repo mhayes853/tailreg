@@ -39,14 +39,15 @@ struct MuxProcessController: Sendable {
         try await end(existing.id)
       }
 
+      var lastFailure: any Error = MuxRuntimeError.noLocalPorts
       for attempt in 0..<Self.launchAttempts {
         do {
           return (try await launch(project, exposure: exposure, attempt: attempt), true)
-        } catch MuxRuntimeError.portsTakenSinceProbing where attempt < Self.launchAttempts - 1 {
-          continue
+        } catch let failure as MuxRuntimeError where failure.isWorthRetrying {
+          lastFailure = failure
         }
       }
-      throw MuxRuntimeError.noLocalPorts
+      throw lastFailure
     }
   }
 
@@ -154,8 +155,9 @@ struct MuxProcessController: Sendable {
     let client = MuxAdminClient(port: run.adminPort)
     for _ in 0..<300 {
       if await client.isReady(as: muxID) { return }
-      guard run.hasMatchingProcess else { throw MuxRuntimeError.portsTakenSinceProbing }
+      // Someone else has the port. Ours cannot have it, whether or not it is still trying.
       if await client.isReady() { throw MuxRuntimeError.portsTakenSinceProbing }
+      guard run.hasMatchingProcess else { throw MuxRuntimeError.exitedBeforeReady }
       try await Task.sleep(for: .milliseconds(100))
     }
     throw MuxRuntimeError.readinessTimedOut
@@ -189,12 +191,25 @@ struct MuxProcessController: Sendable {
 enum MuxRuntimeError: Error, CustomStringConvertible {
   case noLocalPorts
   case portsTakenSinceProbing
+  case exitedBeforeReady
   case readinessTimedOut
+
+  /// Whether another pair of ports is worth trying.
+  ///
+  /// A MUX that exited counts: losing the bind is one of the reasons it would, and the reason is
+  /// not visible from here. If it keeps exiting, this is the error that is finally reported.
+  var isWorthRetrying: Bool {
+    switch self {
+    case .portsTakenSinceProbing, .exitedBeforeReady: true
+    case .noLocalPorts, .readinessTimedOut: false
+    }
+  }
 
   var description: String {
     switch self {
     case .noLocalPorts: "no local ports are available for the project MUX"
     case .portsTakenSinceProbing: "the project MUX could not take the ports it was given"
+    case .exitedBeforeReady: "the project MUX exited before becoming ready"
     case .readinessTimedOut: "timed out waiting for the project MUX"
     }
   }

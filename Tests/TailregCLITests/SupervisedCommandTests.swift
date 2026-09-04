@@ -61,9 +61,7 @@ struct `Supervised command tests` {
   #endif
 
   private func tailregExecutable() -> URL {
-    URL(fileURLWithPath: CommandLine.arguments[0])
-      .deletingLastPathComponent()
-      .appendingPathComponent("tailreg")
+    builtTailregExecutable()
   }
 
   /// `execvp` has not necessarily replaced the helper yet, and signalling before it does would

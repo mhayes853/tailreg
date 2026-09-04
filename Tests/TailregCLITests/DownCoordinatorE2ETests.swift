@@ -112,9 +112,7 @@ struct `Down coordinator E2E tests` {
         .deletingLastPathComponent()
         .deletingLastPathComponent()
       fixture = packageRoot.appendingPathComponent("Tests/Fixtures/Teardown")
-      executable = URL(fileURLWithPath: CommandLine.arguments[0])
-        .deletingLastPathComponent()
-        .appendingPathComponent("tailreg")
+      executable = builtTailregExecutable()
       stateDirectory = FileManager.default.temporaryDirectory
         .appendingPathComponent("tailreg-down-e2e-\(UUID().uuidString)")
       try FileManager.default.createDirectory(at: stateDirectory, withIntermediateDirectories: true)
