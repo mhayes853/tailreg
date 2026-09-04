@@ -515,24 +515,6 @@ private struct RunningApplication: Sendable {
   var outputTasks: [Task<Void, Never>]
 }
 
-actor Console {
-  func write(_ message: String, toStandardError: Bool = false) {
-    let data = Data((message + "\n").utf8)
-    try? (toStandardError ? FileHandle.standardError : FileHandle.standardOutput)
-      .write(contentsOf: data)
-  }
-
-  /// Something worth tracing that is not a failure: the work was done, but not as intended.
-  func warning(_ message: String) {
-    write("warning: \(message)", toStandardError: true)
-  }
-
-  /// Something that leaves the system in a state the caller did not ask for.
-  func error(_ message: String) {
-    write("error: \(message)", toStandardError: true)
-  }
-}
-
 private final class SignalSupervisor: @unchecked Sendable {
   private let onSignal: @Sendable () -> Void
   private let queue = DispatchQueue(label: "com.tailreg.cli.signals")

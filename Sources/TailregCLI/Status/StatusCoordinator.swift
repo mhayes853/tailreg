@@ -376,7 +376,6 @@ struct StatusCoordinator: Sendable {
 
   // MARK: - Queries
 
-
   private func liveBinding(
     for runtime: MuxRunRecord?,
     database: any DatabaseWriter

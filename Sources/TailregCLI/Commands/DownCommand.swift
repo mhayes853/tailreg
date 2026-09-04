@@ -19,7 +19,7 @@ public struct DownCommand: AsyncParsableCommand {
   public func run() async throws {
     let environment = ProcessInfo.processInfo.environment
     let coordinator = DownCoordinator(
-      databasePath: environment["TAILREG_DATABASE_PATH"] ?? defaultTailregDatabasePath(),
+      databasePath: environment.tailregDatabasePath,
       environment: environment
     )
     let result: DownResult

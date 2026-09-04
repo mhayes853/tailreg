@@ -29,9 +29,7 @@ public struct StatusCommand: AsyncParsableCommand {
       throw ValidationError("--project and --all cannot be combined")
     }
     let environment = ProcessInfo.processInfo.environment
-    let coordinator = StatusCoordinator(
-      databasePath: environment["TAILREG_DATABASE_PATH"] ?? defaultTailregDatabasePath()
-    )
+    let coordinator = StatusCoordinator(databasePath: environment.tailregDatabasePath)
     let report = try await coordinator.run(
       StatusRequest(projectPath: project, allProjects: all)
     )

@@ -42,7 +42,7 @@ public struct UpCommand: AsyncParsableCommand {
   public mutating func run() async throws {
     let environment = ProcessInfo.processInfo.environment
     let request = try makeRequest()
-    let databasePath = environment["TAILREG_DATABASE_PATH"] ?? defaultTailregDatabasePath()
+    let databasePath = environment.tailregDatabasePath
     if bg && environment["TAILREG_BACKGROUND_CHILD"] != "1" {
       try await BackgroundLauncher.launch(
         databasePath: databasePath,
