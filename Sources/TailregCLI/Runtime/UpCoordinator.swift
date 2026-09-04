@@ -59,7 +59,7 @@ struct UpCoordinator: Sendable {
     onReady: @Sendable (UpResult) async -> Void = { _ in }
   ) async throws -> UpResult {
     let database = try openTailregDatabase(path: databasePath)
-    let terminator = ProcessTerminator(grace: try TerminationGracePeriod(environment: environment))
+    let terminator = try ProcessTerminator(environment: environment)
     let project = try await ResolvedProject.resolve(
       database: database,
       explicitPath: request.projectPath,
@@ -80,6 +80,11 @@ struct UpCoordinator: Sendable {
       for: project.record,
       exposure: exposure
     )
+    if request.localOnly, runtime.exposure == .tailnet {
+      await console.warning(
+        "this project is already published on the tailnet; --local-only leaves that binding in place"
+      )
+    }
     let endpointController = TailnetEndpointController(
       databasePath: databasePath,
       localOnly: request.localOnly,
@@ -288,59 +293,29 @@ struct UpCoordinator: Sendable {
         try await database.write { database in
           try AppRunRecord.insert { appRun }.execute(database)
         }
-      } catch {
+      } catch let error as DatabaseError
+        where error.extendedResultCode == .SQLITE_CONSTRAINT_UNIQUE
+      {
         throw UpError.alreadyRunning(specification.name)
       }
 
-      let route: MuxRouteResponse?
-      let previousRoute: MuxRouteResponse?
-      if specification.isExposed {
-        let upstream = specification.upstreamURL
-        let existing: MuxRouteResponse?
-        if let requestedRoute = specification.route {
-          existing = try await admin.routes().first { $0.route == requestedRoute }
-        } else {
-          existing = nil
-        }
-        if let existing {
-          route = try await admin.update(
-            route: existing.route,
-            upstream: upstream,
-            pathMode: specification.pathMode
-          )
-          previousRoute = existing
-        } else {
-          route = try await admin.register(
-            MuxRouteRegistrationRequest(
-              name: specification.name,
-              route: specification.route,
-              upstreamURL: upstream.absoluteString,
-              pathMode: specification.pathMode
-            )
-          )
-          previousRoute = nil
-        }
-      } else {
-        route = nil
-        previousRoute = nil
+      do {
+        var running = try await publish(
+          specification,
+          run: appRun,
+          process: process,
+          admin: admin,
+          database: database
+        )
+        running.outputTasks = outputTasks
+        return running
+      } catch {
+        // The run was recorded but never published. An attached run has no process for
+        // `reclaimAbandoned` to disprove, so it would otherwise block this application until the
+        // next `down`.
+        _ = try? await database.write { database in try AppRunRecord.end(appRun.id, in: database) }
+        throw error
       }
-      if let route {
-        let routeID: UUIDV7? = route.id
-        try await database.write { database in
-          try AppRunRecord.find(appRun.id)
-            .update { $0.routeID = #bind(routeID) }
-            .execute(database)
-        }
-      }
-
-      return RunningApplication(
-        name: specification.name,
-        appRunID: appRun.id,
-        process: process,
-        route: route,
-        previousRoute: previousRoute,
-        outputTasks: outputTasks
-      )
     } catch {
       if let process { await terminator.stopProcessGroup(of: process) }
       for task in outputTasks { task.cancel() }
@@ -348,17 +323,80 @@ struct UpCoordinator: Sendable {
     }
   }
 
+  /// Publishes a recorded run's route, if it has one.
+  ///
+  /// A route with the requested name that already exists is updated in place rather than
+  /// replaced, and remembered so a failed `up` can put it back.
+  private func publish(
+    _ specification: ApplicationSpecification,
+    run appRun: AppRunRecord,
+    process: LaunchedProcess?,
+    admin: MuxAdminClient,
+    database: any DatabaseWriter
+  ) async throws -> RunningApplication {
+    let route: MuxRouteResponse?
+    let previousRoute: MuxRouteResponse?
+    if specification.isExposed {
+      let upstream = specification.upstreamURL
+      let existing: MuxRouteResponse?
+      if let requestedRoute = specification.route {
+        existing = try await admin.routes().first { $0.route == requestedRoute }
+      } else {
+        existing = nil
+      }
+      if let existing {
+        route = try await admin.update(
+          route: existing.route,
+          upstream: upstream,
+          pathMode: specification.pathMode
+        )
+        previousRoute = existing
+      } else {
+        route = try await admin.register(
+          MuxRouteRegistrationRequest(
+            name: specification.name,
+            route: specification.route,
+            upstreamURL: upstream.absoluteString,
+            pathMode: specification.pathMode
+          )
+        )
+        previousRoute = nil
+      }
+    } else {
+      route = nil
+      previousRoute = nil
+    }
+    if let route {
+      let routeID: UUIDV7? = route.id
+      try await database.write { database in
+        try AppRunRecord.find(appRun.id)
+          .update { $0.routeID = #bind(routeID) }
+          .execute(database)
+      }
+    }
+
+    return RunningApplication(
+      name: specification.name,
+      appRunID: appRun.id,
+      process: process,
+      route: route,
+      previousRoute: previousRoute,
+      outputTasks: []
+    )
+  }
+
   private func waitForListener(
     port: PortNumber,
     process: LaunchedProcess?,
     application: String
   ) async throws {
-    let timeoutMilliseconds = environment["TAILREG_STARTUP_TIMEOUT_MS"].flatMap(Int.init) ?? 30_000
-    let attempts = max(1, timeoutMilliseconds / 100)
+    let timeout = try MillisecondsSetting.applicationStartup.resolve(from: environment)
     let probe = SystemPortProbe()
-    for _ in 0..<attempts {
+    let clock = ContinuousClock()
+    let deadline = clock.now.advanced(by: timeout)
+    while clock.now < deadline {
       if await probe.isListening(port: port) { return }
-      if let process, !processIsAlive(process.pid) { throw UpError.exitedBeforeReady(application) }
+      if let process, process.hasExited { throw UpError.exitedBeforeReady(application) }
       try await Task.sleep(for: .milliseconds(100))
     }
     throw UpError.readinessTimedOut(application: application, port: port)
@@ -472,7 +510,7 @@ private struct RunningApplication: Sendable {
   let process: LaunchedProcess?
   let route: MuxRouteResponse?
   let previousRoute: MuxRouteResponse?
-  let outputTasks: [Task<Void, Never>]
+  var outputTasks: [Task<Void, Never>]
 }
 
 actor Console {

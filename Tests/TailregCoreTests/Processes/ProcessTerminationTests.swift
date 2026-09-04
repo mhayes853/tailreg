@@ -36,8 +36,7 @@ struct `Process termination tests` {
     )
     // Signalling before the shell installs its trap would test the default disposition instead.
     for await line in process.standardOutput where line.message == "ready" { break }
-    let grace = try #require(TerminationGracePeriod(rawValue: 300))
-    let terminator = ProcessTerminator(grace: grace)
+    let terminator = ProcessTerminator(grace: .milliseconds(300))
 
     let outcome = await terminator.terminate(
       .process(process.pid),
@@ -85,22 +84,22 @@ struct `Process termination tests` {
   }
 
   @Test
-  func `The grace period falls back to its default when unconfigured`() throws {
-    #expect(try TerminationGracePeriod(environment: [:]) == .default)
+  func `A millisecond setting falls back to its default when unconfigured`() throws {
+    let setting = MillisecondsSetting(environmentKey: "TAILREG_TEST_MS", defaultValue: .seconds(2))
+    #expect(try setting.resolve(from: [:]) == .seconds(2))
   }
 
   @Test
-  func `The grace period reads a configured millisecond value`() throws {
-    let period = try TerminationGracePeriod(
-      environment: [TerminationGracePeriod.environmentKey: "1500"]
-    )
-    #expect(period.duration == .milliseconds(1500))
+  func `A millisecond setting reads a configured value`() throws {
+    let setting = MillisecondsSetting(environmentKey: "TAILREG_TEST_MS", defaultValue: .seconds(2))
+    #expect(try setting.resolve(from: ["TAILREG_TEST_MS": "1500"]) == .milliseconds(1500))
   }
 
   @Test(arguments: ["0", "-1", "soon", ""])
-  func `The grace period rejects values that are not positive milliseconds`(_ value: String) {
-    #expect(throws: TerminationGracePeriodError.invalid(value)) {
-      try TerminationGracePeriod(environment: [TerminationGracePeriod.environmentKey: value])
+  func `A millisecond setting rejects values that are not positive milliseconds`(_ value: String) {
+    let setting = MillisecondsSetting(environmentKey: "TAILREG_TEST_MS", defaultValue: .seconds(2))
+    #expect(throws: MillisecondsSettingError.invalid(key: "TAILREG_TEST_MS", value: value)) {
+      try setting.resolve(from: ["TAILREG_TEST_MS": value])
     }
   }
 

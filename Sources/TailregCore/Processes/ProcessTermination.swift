@@ -89,46 +89,6 @@ public enum TerminationOutcome: Hashable, Sendable, CustomStringConvertible {
   }
 }
 
-public struct TerminationGracePeriod: RawRepresentable, Hashable, Sendable {
-  public static let environmentKey = "TAILREG_STOP_TIMEOUT_MS"
-  public static let `default` = TerminationGracePeriod(validatedRawValue: 5_000)
-
-  public let rawValue: Int64
-
-  public init?(rawValue: Int64) {
-    guard rawValue > 0 else { return nil }
-    self.rawValue = rawValue
-  }
-
-  private init(validatedRawValue: Int64) {
-    self.rawValue = validatedRawValue
-  }
-
-  public init(environment: [String: String]) throws {
-    guard let configured = environment[Self.environmentKey] else {
-      self = Self.default
-      return
-    }
-    guard let milliseconds = Int64(configured), let period = Self(rawValue: milliseconds) else {
-      throw TerminationGracePeriodError.invalid(configured)
-    }
-    self = period
-  }
-
-  public var duration: Duration { .milliseconds(rawValue) }
-}
-
-public enum TerminationGracePeriodError: Error, Equatable, CustomStringConvertible {
-  case invalid(String)
-
-  public var description: String {
-    switch self {
-    case .invalid(let value):
-      "\(TerminationGracePeriod.environmentKey) must be a positive millisecond value, not '\(value)'"
-    }
-  }
-}
-
 /// Stops a process or process group gracefully, escalating only when it has to.
 ///
 /// One escalation policy for every process Tailreg owns. Escalation is always conditional on the
@@ -139,12 +99,21 @@ public struct ProcessTerminator<C: Clock>: Sendable where C.Instant.Duration == 
   /// reported rather than waited out.
   private static var forcedConfirmation: Duration { .seconds(1) }
 
-  private let grace: TerminationGracePeriod
+  private let grace: Duration
   private let clock: C
 
-  public init(grace: TerminationGracePeriod = .default, clock: C = ContinuousClock()) {
+  /// - Parameter grace: How long the target has to stop after SIGTERM before it is killed.
+  public init(
+    grace: Duration = MillisecondsSetting.terminationGrace.defaultValue,
+    clock: C = ContinuousClock()
+  ) {
     self.grace = grace
     self.clock = clock
+  }
+
+  /// A terminator whose grace period comes from the environment.
+  public init(environment: [String: String]) throws where C == ContinuousClock {
+    self.init(grace: try MillisecondsSetting.terminationGrace.resolve(from: environment))
   }
 
   /// Asks the target to stop, without waiting for it.
@@ -166,7 +135,7 @@ public struct ProcessTerminator<C: Clock>: Sendable where C.Instant.Duration == 
 
     let start = clock.now
     target.send(SIGTERM)
-    if await waitForExit(target, observing: observation, within: grace.duration) {
+    if await waitForExit(target, observing: observation, within: grace) {
       return .exitedOnTermination(after: start.duration(to: clock.now))
     }
 

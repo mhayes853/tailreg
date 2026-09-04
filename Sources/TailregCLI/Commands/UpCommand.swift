@@ -67,7 +67,10 @@ public struct UpCommand: AsyncParsableCommand {
     }
   }
 
-  private func makeRequest() throws -> UpRequest {
+  func makeRequest() throws -> UpRequest {
+    if localOnly, tailnetPort != nil {
+      throw ValidationError("--tailnet-port has no effect with --local-only")
+    }
     if app == nil {
       guard attach == nil, route == nil, port == nil else {
         throw ValidationError("--attach, --route, and --port require --app")
@@ -106,7 +109,7 @@ private enum BackgroundLauncher {
     databasePath: String,
     environment: [String: String]
   ) async throws {
-    let startupTimeout = try BackgroundStartupTimeout(environment: environment)
+    let startupTimeout = try MillisecondsSetting.backgroundStartup.resolve(from: environment)
     let directory = URL(fileURLWithPath: databasePath).deletingLastPathComponent()
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     let token = UUID().uuidString.lowercased()
@@ -130,7 +133,7 @@ private enum BackgroundLauncher {
 
     defer { try? FileManager.default.removeItem(at: readyURL) }
     let clock = ContinuousClock()
-    let deadline = clock.now.advanced(by: startupTimeout.duration)
+    let deadline = clock.now.advanced(by: startupTimeout)
     while clock.now < deadline {
       if FileManager.default.fileExists(atPath: readyURL.path) {
         let ready = (try? String(contentsOf: readyURL, encoding: .utf8)) ?? ""
@@ -153,44 +156,26 @@ private enum BackgroundLauncher {
   }
 }
 
-struct BackgroundStartupTimeout: RawRepresentable, Equatable, Sendable {
-  static let environmentKey = "TAILREG_BACKGROUND_STARTUP_TIMEOUT_MS"
-  static let defaultValue = BackgroundStartupTimeout(validatedRawValue: 60_000)
+extension MillisecondsSetting {
+  /// How long `up --bg` waits for the background process to report that it is ready.
+  static let backgroundStartup = MillisecondsSetting(
+    environmentKey: "TAILREG_BACKGROUND_STARTUP_TIMEOUT_MS",
+    defaultValue: .seconds(60)
+  )
 
-  let rawValue: Int64
-
-  init?(rawValue: Int64) {
-    guard rawValue > 0 else { return nil }
-    self.rawValue = rawValue
-  }
-
-  private init(validatedRawValue: Int64) {
-    self.rawValue = validatedRawValue
-  }
-
-  init(environment: [String: String]) throws {
-    guard let configured = environment[Self.environmentKey] else {
-      self = Self.defaultValue
-      return
-    }
-    guard let milliseconds = Int64(configured), let timeout = Self(rawValue: milliseconds) else {
-      throw BackgroundLaunchError.invalidTimeout(configured)
-    }
-    self = timeout
-  }
-
-  var duration: Duration { .milliseconds(rawValue) }
+  /// How long `up` waits for an application to listen on its port.
+  static let applicationStartup = MillisecondsSetting(
+    environmentKey: "TAILREG_STARTUP_TIMEOUT_MS",
+    defaultValue: .seconds(30)
+  )
 }
 
 enum BackgroundLaunchError: Error, CustomStringConvertible, Equatable {
-  case invalidTimeout(String)
   case exited(status: Int32, logPath: String)
   case timedOut(logPath: String)
 
   var description: String {
     switch self {
-    case .invalidTimeout(let value):
-      "\(BackgroundStartupTimeout.environmentKey) must be a positive millisecond value, not '\(value)'"
     case .exited(let status, let path):
       "background Tailreg process exited with status \(status); see \(path)"
     case .timedOut(let path): "timed out waiting for background startup; see \(path)"

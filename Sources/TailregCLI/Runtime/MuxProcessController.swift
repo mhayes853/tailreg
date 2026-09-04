@@ -27,11 +27,12 @@ struct MuxProcessController: Sendable {
       if var existing = try await liveRun(for: project.id) {
         let client = MuxAdminClient(port: existing.adminPort)
         if existing.hasMatchingProcess, await client.isReady() {
-          // An adopted runtime is about to be published the way *this* invocation asked for, so
-          // the record follows the request rather than the invocation that happened to start it.
-          if existing.exposure != exposure {
-            try await setExposure(exposure, of: existing.id)
-            existing.exposure = exposure
+          // Exposure only ever widens. A local runtime that is now being bound to the tailnet is
+          // recorded as such, but a tailnet runtime asked for locally stays tailnet: its binding
+          // still exists and still serves, and forgetting it here is how it would leak.
+          if existing.exposure == .local, exposure == .tailnet {
+            try await setExposure(.tailnet, of: existing.id)
+            existing.exposure = .tailnet
           }
           return (existing, false)
         }

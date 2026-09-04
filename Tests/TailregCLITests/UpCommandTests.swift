@@ -16,18 +16,18 @@ struct `Up command tests` {
 
   @Test
   func `Uses a configurable positive background startup timeout`() throws {
-    #expect(try BackgroundStartupTimeout(environment: [:]) == .defaultValue)
-    #expect(
-      try BackgroundStartupTimeout(
-        environment: [BackgroundStartupTimeout.environmentKey: "250"]
-      ).duration == .milliseconds(250)
-    )
-    #expect(
-      throws: BackgroundLaunchError.invalidTimeout("0")
-    ) {
-      try BackgroundStartupTimeout(
-        environment: [BackgroundStartupTimeout.environmentKey: "0"]
-      )
+    let setting = MillisecondsSetting.backgroundStartup
+    #expect(try setting.resolve(from: [:]) == .seconds(60))
+    #expect(try setting.resolve(from: [setting.environmentKey: "250"]) == .milliseconds(250))
+    #expect(throws: MillisecondsSettingError.self) {
+      try setting.resolve(from: [setting.environmentKey: "0"])
+    }
+  }
+
+  @Test
+  func `A tailnet port cannot be requested for a local-only project`() throws {
+    #expect(throws: ValidationError.self) {
+      try UpCommand.parse(["--local-only", "--tailnet-port", "8443"]).makeRequest()
     }
   }
 }

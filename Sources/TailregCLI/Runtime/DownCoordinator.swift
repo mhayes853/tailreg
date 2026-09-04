@@ -75,7 +75,7 @@ struct DownCoordinator: Sendable {
   @discardableResult
   func run(_ request: DownRequest) async throws -> DownResult {
     let database = try openTailregDatabase(path: databasePath)
-    let terminator = ProcessTerminator(grace: try TerminationGracePeriod(environment: environment))
+    let terminator = try ProcessTerminator(environment: environment)
 
     guard
       let project = try await ResolvedProject.lookUp(
