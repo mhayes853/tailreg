@@ -90,7 +90,6 @@ public struct SystemProcessRunner: ProcessRunner {
     // set afterwards would never be called.
     let exited = ExitReport()
     process.terminationHandler = { finished in
-      finished.terminationHandler = nil
       exited.report(finished.terminationStatus)
     }
 

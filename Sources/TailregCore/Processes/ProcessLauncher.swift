@@ -38,16 +38,21 @@ public final class LaunchedProcess: Sendable {
   public let standardError: AsyncStream<LogLine>
 
   private let state: ProcessLaunchState
+  /// Kept only so the `Process` outlives the child it is waiting on, and with it the termination
+  /// handler that reports the exit.
+  private let process: Process
 
   fileprivate init(
     pid: Int32,
     standardOutput: AsyncStream<LogLine>,
     standardError: AsyncStream<LogLine>,
+    process: Process,
     state: ProcessLaunchState
   ) {
     self.pid = pid
     self.standardOutput = standardOutput
     self.standardError = standardError
+    self.process = process
     self.state = state
   }
 
@@ -117,10 +122,10 @@ public struct SystemProcessLauncher: ProcessLaunching {
 
     let state = ProcessLaunchState()
     // Installed before the launch: a short-lived child can be reaped before `run()` returns, and
-    // a handler set afterwards would never be called. Clearing it inside breaks the reference
-    // cycle that keeps the `Process` alive until the child is gone.
+    // a handler set afterwards would never be called. The handler holds only the state, and the
+    // returned `LaunchedProcess` holds the `Process`, so nothing here is a cycle and the handler
+    // never has to reach back into the process that is calling it.
     process.terminationHandler = { finished in
-      finished.terminationHandler = nil
       state.complete(
         with: ProcessExit(
           code: finished.terminationStatus,
@@ -145,6 +150,7 @@ public struct SystemProcessLauncher: ProcessLaunching {
       pid: process.processIdentifier,
       standardOutput: output,
       standardError: error,
+      process: process,
       state: state
     )
   }

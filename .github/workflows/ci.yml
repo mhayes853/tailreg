@@ -15,7 +15,9 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 10
+    # A cold build on the three-core macOS runner is most of this on its own, so the cap is set
+    # well clear of it. Hangs are caught by the suites' own time limits, which name the test.
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: swift-actions/setup-swift@v3
@@ -37,6 +39,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libc++-21-dev libc++abi-21-dev
           echo "LIBRARY_PATH=/usr/lib/llvm-21/lib${LIBRARY_PATH:+:$LIBRARY_PATH}" >> "$GITHUB_ENV"
+      - uses: actions/cache@v4
+        with:
+          path: .build
+          key: ${{ runner.os }}-spm-test-${{ hashFiles('Package.resolved') }}
+          restore-keys: |
+            ${{ runner.os }}-spm-test-
       - name: Run tests
         run: swift test --disable-experimental-prebuilts
 
