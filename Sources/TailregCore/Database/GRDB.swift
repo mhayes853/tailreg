@@ -265,6 +265,9 @@ public struct AppRunRecord: Hashable, Sendable {
   public var name: String
   public var ownership: ApplicationOwnership
   public var routeID: UUIDV7?
+  /// The root Tailscale binding this run was published under. A binding stays bound for as
+  /// long as a live run references it, so this is the reference.
+  public var bindingID: UUIDV7?
   public var pid: Int?
   public var processGroupID: Int?
   /// Identifies the process behind `pid`, so a recycled PID is never mistaken for this run.
@@ -280,6 +283,7 @@ public struct AppRunRecord: Hashable, Sendable {
     name: String,
     ownership: ApplicationOwnership,
     routeID: UUIDV7? = nil,
+    bindingID: UUIDV7? = nil,
     pid: Int? = nil,
     processGroupID: Int? = nil,
     processStartedAt: Int64? = nil,
@@ -291,6 +295,7 @@ public struct AppRunRecord: Hashable, Sendable {
     self.name = name
     self.ownership = ownership
     self.routeID = routeID
+    self.bindingID = bindingID
     self.pid = pid
     self.processGroupID = processGroupID
     self.processStartedAt = processStartedAt
@@ -862,6 +867,7 @@ public func tailregDatabaseMigrator() -> DatabaseMigrator {
         "name"             TEXT    NOT NULL,
         "ownership"        TEXT    NOT NULL,
         "routeID"          TEXT    REFERENCES "muxRoutes"("id") ON DELETE SET NULL,
+        "bindingID"        TEXT    REFERENCES "bindings"("id") ON DELETE SET NULL,
         "pid"              INTEGER,
         "processGroupID"   INTEGER,
         "processStartedAt" INTEGER,

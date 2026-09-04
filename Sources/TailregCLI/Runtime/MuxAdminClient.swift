@@ -1,6 +1,7 @@
 import Foundation
 import TailregCore
 import TailregMultiplexer
+import UUIDV7
 
 #if canImport(FoundationNetworking)
   import FoundationNetworking
@@ -9,8 +10,22 @@ import TailregMultiplexer
 struct MuxAdminClient: Sendable {
   let port: Int
 
+  /// Whether anything answers on the admin port.
   func isReady() async -> Bool {
-    (try? await data(path: "/status", method: "GET")) != nil
+    await identity() != nil
+  }
+
+  /// Whether the MUX answering on the admin port is the one expected.
+  ///
+  /// Ports are handed out by probing, so a recorded admin port can be answering for a different
+  /// MUX by the time it is used. Anything that goes on to publish routes through it has to check.
+  func isReady(as muxID: UUIDV7) async -> Bool {
+    await identity() == muxID
+  }
+
+  func identity() async -> UUIDV7? {
+    let status: MultiplexerStatus? = try? await request(path: "/status", method: "GET")
+    return status?.id
   }
 
   func routes() async throws -> [MuxRouteResponse] {

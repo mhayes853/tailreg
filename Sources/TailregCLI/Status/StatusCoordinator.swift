@@ -115,8 +115,8 @@ struct StatusCoordinator: Sendable {
     }
     let (runtime, routes, runs) = try await (runtimeRead, routesRead, runsRead)
 
-    let binding = try await liveBinding(for: runtime, database: database)
-    let baseURL = baseURL(for: runtime, binding: binding)
+    let bindings = try await liveBindings(for: runtime, database: database)
+    let baseURL = baseURL(for: runtime, binding: bindings.first)
     // The two halves that leave the process — the MUX admin API and the attached upstreams —
     // and neither needs the other's answer. Overlapping them keeps one unreachable thing from
     // adding its timeout to everything reported after it.
@@ -134,11 +134,19 @@ struct StatusCoordinator: Sendable {
       root: project.root.path,
       url: baseURL,
       exposure: runtime?.exposure,
+      bindings: bindings.map { binding in
+        BindingStatus(
+          id: binding.id,
+          url: binding.url,
+          tailnetPort: binding.tailnetPort,
+          holders: runs.filter { $0.bindingID == binding.id }.map(\.name).sorted()
+        )
+      },
       mux: mux,
       applications: applications,
       problems: problems(
         runtime: runtime,
-        binding: binding,
+        bindings: bindings,
         mux: mux,
         applications: applications,
         routes: routes,
@@ -280,7 +288,7 @@ struct StatusCoordinator: Sendable {
 
   private func problems(
     runtime: MuxRunRecord?,
-    binding: TailscaleBindingRecord?,
+    bindings: [TailscaleBindingRecord],
     mux: MuxStatus,
     applications: [ApplicationStatus],
     routes: [MuxRouteRecord],
@@ -289,12 +297,25 @@ struct StatusCoordinator: Sendable {
   ) -> [StatusProblem] {
     var problems: [StatusProblem] = []
 
-    if let runtime, runtime.exposure == .tailnet, binding == nil {
+    if let runtime, runtime.exposure == .tailnet, bindings.isEmpty {
       problems.append(
         StatusProblem(
           subject: "binding",
           kind: .missing,
           detail: "no live binding for ingress port \(runtime.ingressPort)"
+        )
+      )
+    }
+    // A binding is kept by the runs that hold it and removed with the last of them, so one with
+    // no holder is the trace of a teardown that never finished.
+    let held = Set(runs.compactMap(\.bindingID))
+    for binding in bindings where !held.contains(binding.id) {
+      problems.append(
+        StatusProblem(
+          subject: "binding",
+          kind: .unheldBinding,
+          detail:
+            "\(binding.url?.absoluteString ?? "tailnet port \(binding.tailnetPort)") is held by no application run"
         )
       )
     }
@@ -376,17 +397,14 @@ struct StatusCoordinator: Sendable {
 
   // MARK: - Queries
 
-  private func liveBinding(
+  private func liveBindings(
     for runtime: MuxRunRecord?,
     database: any DatabaseWriter
-  ) async throws -> TailscaleBindingRecord? {
-    guard let runtime, runtime.exposure == .tailnet else { return nil }
+  ) async throws -> [TailscaleBindingRecord] {
+    guard let runtime, runtime.exposure == .tailnet else { return [] }
     let ingressPort = runtime.ingressPort
     return try await database.read { database in
-      try TailscaleBindingRecord
-        .where { $0.localPort.eq(ingressPort) && $0.endedAt.is(nil) }
-        .order { $0.createdAt.desc() }
-        .fetchOne(database)
+      try TailscaleBindingRecord.live(localPort: ingressPort).fetchAll(database)
     }
   }
 

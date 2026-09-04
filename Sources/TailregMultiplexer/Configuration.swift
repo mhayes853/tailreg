@@ -28,11 +28,16 @@ extension CapturedHeaderPolicy {
   }
 }
 
+/// Answered on the admin API. Carries the MUX's identity because admin ports are allocated by
+/// probing and can be taken by another MUX in between: a caller has to be able to tell that the
+/// port it recorded is still answering for the MUX it recorded.
 public struct MultiplexerStatus: ResponseCodable, Equatable, Sendable {
   public let status: String
+  public let id: UUIDV7
 
-  public init(status: String) {
+  public init(status: String, id: UUIDV7) {
     self.status = status
+    self.id = id
   }
 }
 

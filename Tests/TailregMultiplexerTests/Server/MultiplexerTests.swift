@@ -22,7 +22,8 @@ struct `Multiplexer tests` {
 
   @Test
   func `Status reports that the multiplexer is available`() async throws {
-    let application = try Multiplexer().buildApplication()
+    let multiplexer = try Multiplexer()
+    let application = multiplexer.buildApplication()
 
     try await application.test(.router) { client in
       try await client.execute(uri: "/status", method: .get) { response in
@@ -34,7 +35,7 @@ struct `Multiplexer tests` {
             MultiplexerStatus.self,
             from: Data(response.body.readableBytesView)
           )
-        #expect(status == MultiplexerStatus(status: "ok"))
+        #expect(status == MultiplexerStatus(status: "ok", id: multiplexer.configuration.id))
       }
     }
   }

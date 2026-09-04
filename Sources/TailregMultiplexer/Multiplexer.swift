@@ -76,7 +76,7 @@ public struct Multiplexer: Sendable {
   public func buildApplication() -> Application<RouterResponder<BasicRequestContext>> {
     let router = Router()
     router.get("/status") { _, _ in
-      MultiplexerStatus(status: "ok")
+      MultiplexerStatus(status: "ok", id: configuration.id)
     }
     router.get("/routes") { _, _ in
       try await routes().map(MuxRouteResponse.init)

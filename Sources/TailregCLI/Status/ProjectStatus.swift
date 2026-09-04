@@ -21,9 +21,20 @@ struct ProjectStatus: Codable, Equatable, Sendable {
   /// reachable on the tailnet but no binding is recorded — which is a problem, not a URL.
   var url: URL? = nil
   var exposure: ProjectExposure? = nil
+  /// Every root binding recorded for the runtime, with the applications holding each.
+  var bindings: [BindingStatus] = []
   var mux: MuxStatus
   var applications: [ApplicationStatus]
   var problems: [StatusProblem]
+}
+
+struct BindingStatus: Codable, Equatable, Sendable {
+  var id: UUIDV7
+  var url: URL?
+  var tailnetPort: Int
+  /// The live runs that keep this binding bound. Empty is a problem: teardown would have
+  /// removed it.
+  var holders: [String]
 }
 
 struct MuxStatus: Codable, Equatable, Sendable {
@@ -93,6 +104,7 @@ struct StatusProblem: Codable, Equatable, Sendable {
     case notListening = "not-listening"
     case notConfigured = "not-configured"
     case orphanedRoute = "orphaned-route"
+    case unheldBinding = "unheld-binding"
 
     var label: String {
       switch self {
@@ -102,6 +114,7 @@ struct StatusProblem: Codable, Equatable, Sendable {
       case .notListening: "not listening"
       case .notConfigured: "not configured"
       case .orphanedRoute: "orphaned route"
+      case .unheldBinding: "unheld binding"
       }
     }
   }

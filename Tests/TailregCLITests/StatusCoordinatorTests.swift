@@ -119,13 +119,43 @@ struct `Status coordinator tests` {
     defer { context.cleanUp() }
     let project = try context.insertProject()
     let runtime = try context.insertRuntime(project: project, exposure: .tailnet)
-    try context.insertBinding(localPort: runtime.ingressPort)
+    let binding = try context.insertBinding(localPort: runtime.ingressPort)
+    try await context.database.write { db in
+      try AppRunRecord
+        .insert {
+          AppRunRecord(
+            projectID: project.id,
+            name: "web",
+            ownership: .attached,
+            bindingID: binding.id
+          )
+        }
+        .execute(db)
+    }
 
     let report = try await context.coordinator().run(StatusRequest())
 
     let status = try #require(report.projects.first)
     #expect(status.url?.absoluteString == "https://demo.tail1234.ts.net/")
+    #expect(status.bindings.map(\.holders) == [["web"]])
     #expect(status.problems.isEmpty)
+  }
+
+  /// A binding is kept by the runs that hold it, so one with no holder is something teardown
+  /// should have removed and did not.
+  @Test
+  func `A binding that no run holds is reported`() async throws {
+    let context = try Context()
+    defer { context.cleanUp() }
+    let project = try context.insertProject()
+    let runtime = try context.insertRuntime(project: project, exposure: .tailnet)
+    try context.insertBinding(localPort: runtime.ingressPort)
+
+    let report = try await context.coordinator().run(StatusRequest())
+
+    let status = try #require(report.projects.first)
+    #expect(status.bindings.map(\.holders) == [[]])
+    #expect(status.problems.map(\.kind) == [.unheldBinding])
   }
 
   @Test
@@ -336,17 +366,19 @@ struct `Status coordinator tests` {
       try database.write { db in try AppRunRecord.insert { run }.execute(db) }
     }
 
-    func insertBinding(localPort: Int) throws {
+    @discardableResult
+    func insertBinding(localPort: Int, tailnetPort: Int = 443) throws -> TailscaleBindingRecord {
       let binding = TailscaleBindingRecord(
         hostname: "demo.tail1234.ts.net",
         localPort: localPort,
-        tailnetPort: 443,
+        tailnetPort: tailnetPort,
         proto: .https,
         mountPath: "/",
         status: .active,
         createdAt: Date()
       )
       try database.write { db in try TailscaleBindingRecord.insert { binding }.execute(db) }
+      return binding
     }
 
     /// A PID that is certainly free: the process is waited on before the number is handed back,

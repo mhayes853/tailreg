@@ -95,9 +95,9 @@ struct UpCoordinator: Sendable {
       databasePath: databasePath,
       environment: environment
     )
-    let baseURL: URL
+    let endpoint: TailnetEndpoint
     do {
-      baseURL = try await endpointController.ensure(
+      endpoint = try await endpointController.ensure(
         ingressPort: runtime.ingressPort,
         exposure: exposure,
         requestedPort: request.tailnetPort
@@ -106,10 +106,11 @@ struct UpCoordinator: Sendable {
       if muxWasStarted { try? await muxController.stop(runtime) }
       throw error
     }
+    let baseURL = endpoint.url
 
     let admin = MuxAdminClient(port: runtime.adminPort)
     let teardown = ProjectRuntimeTeardown(
-      admin: admin,
+      liveRouteCount: { try await admin.routes().count },
       muxController: muxController,
       endpointController: endpointController
     )
@@ -121,7 +122,7 @@ struct UpCoordinator: Sendable {
             group.addTask {
               try await start(
                 application,
-                baseURL: baseURL,
+                endpoint: endpoint,
                 admin: admin,
                 terminator: terminator,
                 database: database,
@@ -253,12 +254,13 @@ struct UpCoordinator: Sendable {
 
   private func start(
     _ specification: ApplicationSpecification,
-    baseURL: URL,
+    endpoint: TailnetEndpoint,
     admin: MuxAdminClient,
     terminator: ProcessTerminator<ContinuousClock>,
     database: any DatabaseWriter,
     projectID: UUIDV7
   ) async throws -> RunningApplication {
+    let baseURL = endpoint.url
     var process: LaunchedProcess?
     var outputTasks: [Task<Void, Never>] = []
     if var command = specification.command {
@@ -302,6 +304,7 @@ struct UpCoordinator: Sendable {
         projectID: projectID,
         name: specification.name,
         ownership: process == nil ? .attached : .managed,
+        bindingID: endpoint.bindingID,
         pid: process.map { Int($0.pid) },
         processGroupID: process.flatMap { ProcessGroupID(getpgid($0.pid)) }
           .map { Int($0.rawValue) },
@@ -534,10 +537,11 @@ struct UpCoordinator: Sendable {
   ) async {
     let lock = FileLock(path: databasePath + ".runtime.lock")
     do {
-      let outcome = try await lock.withLock(.exclusive) {
+      let result = try await lock.withLock(.exclusive) {
         await teardown.stopIfUnused(runtime)
       }
-      if case .failed(let reason) = outcome {
+      for binding in result.bindings { await console.report(binding) }
+      if case .failed(let reason) = result.runtime {
         await console.error("the project runtime was not fully removed: \(reason)")
       }
     } catch {

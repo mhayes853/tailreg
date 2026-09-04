@@ -84,6 +84,9 @@ struct StatusTextRenderer: Sendable {
       section("mux", muxTable(project.mux, now: now)),
       section("applications", applicationsTable(project.applications))
     ]
+    if !project.bindings.isEmpty {
+      sections.insert(section("bindings", bindingsTable(project.bindings)), at: 1)
+    }
     // Omitted entirely when empty: a healthy project should be quiet, not print a table saying
     // that nothing is wrong.
     if !project.problems.isEmpty {
@@ -106,6 +109,20 @@ struct StatusTextRenderer: Sendable {
         ["url", project.url?.absoluteString ?? "-"],
         ["exposure", project.exposure?.rawValue ?? "-"]
       ]
+    )
+  }
+
+  private func bindingsTable(_ bindings: [BindingStatus]) -> StatusTable {
+    StatusTable(
+      headers: ["url", "port", "holders"],
+      alignments: [.left, .right, .left],
+      rows: bindings.map { binding in
+        [
+          binding.url?.absoluteString ?? "-",
+          String(binding.tailnetPort),
+          binding.holders.isEmpty ? "-" : binding.holders.joined(separator: ", ")
+        ]
+      }
     )
   }
 

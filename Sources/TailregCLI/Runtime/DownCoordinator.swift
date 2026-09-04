@@ -7,6 +7,8 @@ import UUIDV7
 struct DownRequest: Sendable {
   var projectPath: String?
   var applicationNames: [String] = []
+  /// Remove the project's root bindings even while other applications still hold them.
+  var unbindAll = false
 }
 
 /// What happened to one application.
@@ -43,12 +45,13 @@ struct DownResult: Sendable {
   let projectName: String
   let applications: [(name: String, outcome: ApplicationDownOutcome)]
   let runtime: ProjectRuntimeTeardown.Outcome?
+  let bindings: [ProjectRuntimeTeardown.BindingOutcome]
 
   /// True when everything selected is down and the runtime is in the state it should be.
   var isClean: Bool {
     guard applications.allSatisfy(\.outcome.isDown) else { return false }
     if case .failed = runtime { return false }
-    return true
+    return !bindings.contains(where: \.isFailure)
   }
 }
 
@@ -84,7 +87,7 @@ struct DownCoordinator: Sendable {
       )
     else {
       await console.write("nothing is running for this project")
-      return DownResult(projectName: "", applications: [], runtime: nil)
+      return DownResult(projectName: "", applications: [], runtime: nil, bindings: [])
     }
 
     // Everything that changes a MUX, a route, a binding or a process is serialized here, and the
@@ -141,22 +144,23 @@ struct DownCoordinator: Sendable {
       outcomes.append((name, .alreadyDown))
     }
 
-    var teardown: ProjectRuntimeTeardown.Outcome?
+    var teardown: ProjectRuntimeTeardown.Result?
     if let runtime, let admin {
       teardown = await ProjectRuntimeTeardown(
-        admin: admin,
+        liveRouteCount: { try await admin.routes().count },
         muxController: controller,
         endpointController: TailnetEndpointController(
           databasePath: databasePath,
           environment: environment
         )
       )
-      .stopIfUnused(runtime)
+      .stopIfUnused(runtime, unbindingAll: request.unbindAll)
     }
     return DownResult(
       projectName: project.record.name,
       applications: outcomes.sorted { $0.name < $1.name },
-      runtime: teardown
+      runtime: teardown?.runtime,
+      bindings: teardown?.bindings ?? []
     )
   }
 
@@ -274,6 +278,7 @@ struct DownCoordinator: Sendable {
     for application in result.applications {
       await console.write("  \(application.name)  \(application.outcome.summary)")
     }
+    for binding in result.bindings { await console.report(binding) }
     switch result.runtime {
     case .stopped: await console.write("  project  stopped")
     case .stillInUse(let routes):
