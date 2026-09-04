@@ -165,16 +165,19 @@ struct MuxProcessController: Sendable {
 
   /// Two free ports, preferring the same pair for the same project so its URL stays stable.
   ///
-  /// `attempt` moves the search away from the pair a previous try lost, so a project racing
-  /// another for its usual ports does not keep picking the same ones.
+  /// Only the first attempt is seeded. Whatever this lost the ports to is most likely another MUX
+  /// that started at the same moment, and a second try computed the same way would follow it to
+  /// the same pair and lose again: retries pick at random so the two diverge.
   private func allocatePorts(
     seed: String,
     attempt: Int
   ) async throws -> (ingress: Int, admin: Int) {
     let portProbe = SystemPortProbe()
     let pool = Array(39_100...39_999)
-    let seeded = seed.utf8.reduce(0) { ($0 &* 31 &+ Int($1)) % pool.count }
-    let offset = (seeded + attempt * 37) % pool.count
+    let offset =
+      attempt == 0
+      ? seed.utf8.reduce(0) { ($0 &* 31 &+ Int($1)) % pool.count }
+      : Int.random(in: 0..<pool.count)
     var free: [Int] = []
     for index in 0..<pool.count {
       let candidate = pool[(offset + index) % pool.count]
