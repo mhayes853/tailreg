@@ -70,7 +70,10 @@ jobs:
           ) &
           watchdog=$!
           trap 'kill "$watchdog" 2>/dev/null || true' EXIT
-          script -q /dev/null swift test --disable-experimental-prebuilts
+          # `script` does not reliably forward the child's status, so carry it out by hand.
+          script -q /dev/null \
+            bash -c 'swift test --disable-experimental-prebuilts; echo "$?" > /tmp/test-status'
+          exit "$(cat /tmp/test-status)"
 
   browser-test:
     runs-on: ubuntu-latest
