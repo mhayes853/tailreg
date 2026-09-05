@@ -1,4 +1,5 @@
 import Foundation
+import TailregTestSupport
 import Testing
 
 @testable import TailregCore

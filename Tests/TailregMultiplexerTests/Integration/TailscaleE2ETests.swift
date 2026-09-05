@@ -1,6 +1,7 @@
 import Foundation
 import SQLiteData
 import TailregCore
+import TailregTestSupport
 import Testing
 
 #if canImport(FoundationNetworking)
@@ -12,8 +13,8 @@ import Testing
   .serialized
 )
 struct `MUX Tailscale E2E tests` {
-  private static let ingressPort = 19_100
-  private static let tailnetPort = 8_443
+  private static let ingressPort = PortNumber.fixed(19_100)
+  private static let tailnetPort = PortNumber.fixed(8_443)
   private static let captureAdminPort = 19_106
 
   private enum FixtureError: Error {

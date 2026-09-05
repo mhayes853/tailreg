@@ -1,20 +1,20 @@
 import Foundation
 
-final class TempDirectory {
-  let url: URL
+public final class TempDirectory {
+  public let url: URL
 
-  init() throws {
+  public init() throws {
     url = URL(fileURLWithPath: NSTemporaryDirectory())
       .appendingPathComponent("tailreg-tests-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
   }
 
-  func path(_ component: String) -> String {
+  public func path(_ component: String) -> String {
     url.appendingPathComponent(component).path
   }
 
   @discardableResult
-  func makeExecutable(_ component: String) -> String {
+  public func makeExecutable(_ component: String) -> String {
     let path = self.path(component)
     FileManager.default.createFile(
       atPath: path,
@@ -25,7 +25,7 @@ final class TempDirectory {
   }
 
   @discardableResult
-  func makeFile(_ component: String, contents: String) throws -> String {
+  public func makeFile(_ component: String, contents: String) throws -> String {
     let path = self.path(component)
     try Data(contents.utf8).write(to: URL(fileURLWithPath: path))
     return path

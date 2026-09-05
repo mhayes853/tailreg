@@ -1,6 +1,7 @@
 import Clocks
 import Foundation
 import SQLiteData
+import TailregTestSupport
 import Testing
 import UUIDV7
 
@@ -9,26 +10,6 @@ import UUIDV7
 @Suite(.timeLimit(.minutes(1)))
 struct `Process log monitor tests` {
   private static let stamp = Date(timeIntervalSince1970: 1_700_000_000)
-
-  private func database(_ temp: TempDirectory) throws -> any DatabaseWriter {
-    try openTailregDatabase(path: temp.path("tailreg.sqlite"), kind: .queue)
-  }
-
-  private func binding(into database: any DatabaseWriter) async throws -> UUIDV7 {
-    let record = TailscaleBindingRecord(
-      hostname: "node.example.ts.net",
-      localPort: 3000,
-      tailnetPort: 443,
-      proto: .https,
-      mountPath: "/",
-      status: .active,
-      createdAt: Self.stamp
-    )
-    try await database.write { db in
-      try TailscaleBindingRecord.insert { record }.execute(db)
-    }
-    return record.id
-  }
 
   private func line(_ message: String) -> LogLine {
     LogLine(stream: .standardOutput, message: message, at: Self.stamp)
@@ -45,9 +26,8 @@ struct `Process log monitor tests` {
 
   @Test
   func `Flushes A Full Batch Without Waiting For The Interval`() async throws {
-    let temp = try TempDirectory()
-    let database = try database(temp)
-    let bindingID = try await binding(into: database)
+    let database = try TestDatabase.inMemory()
+    let bindingID = try await TailscaleBindingRecord.insertFixture(into: database)
 
     let (output, lines) = AsyncStream.makeStream(of: LogLine.self)
     let (batches, reported) = AsyncStream.makeStream(of: [LogLine].self)
@@ -70,9 +50,8 @@ struct `Process log monitor tests` {
 
   @Test
   func `Flushes A Partial Batch When The Interval Elapses`() async throws {
-    let temp = try TempDirectory()
-    let database = try database(temp)
-    let bindingID = try await binding(into: database)
+    let database = try TestDatabase.inMemory()
+    let bindingID = try await TailscaleBindingRecord.insertFixture(into: database)
 
     let clock = TestClock()
     let (output, lines) = AsyncStream.makeStream(of: LogLine.self)
@@ -107,9 +86,8 @@ struct `Process log monitor tests` {
 
   @Test
   func `Writes The Final Partial Batch When The Stream Finishes`() async throws {
-    let temp = try TempDirectory()
-    let database = try database(temp)
-    let bindingID = try await binding(into: database)
+    let database = try TestDatabase.inMemory()
+    let bindingID = try await TailscaleBindingRecord.insertFixture(into: database)
 
     let (output, lines) = AsyncStream.makeStream(of: LogLine.self)
     let monitor = ProcessLogMonitor(database: database, batchSize: 1000, clock: TestClock())
@@ -125,9 +103,8 @@ struct `Process log monitor tests` {
 
   @Test
   func `Appends Successive Batches In Order`() async throws {
-    let temp = try TempDirectory()
-    let database = try database(temp)
-    let bindingID = try await binding(into: database)
+    let database = try TestDatabase.inMemory()
+    let bindingID = try await TailscaleBindingRecord.insertFixture(into: database)
 
     let (output, lines) = AsyncStream.makeStream(of: LogLine.self)
     let (batches, reported) = AsyncStream.makeStream(of: [LogLine].self)
@@ -151,9 +128,8 @@ struct `Process log monitor tests` {
 
   @Test
   func `An Empty Stream Writes Nothing`() async throws {
-    let temp = try TempDirectory()
-    let database = try database(temp)
-    let bindingID = try await binding(into: database)
+    let database = try TestDatabase.inMemory()
+    let bindingID = try await TailscaleBindingRecord.insertFixture(into: database)
 
     let (output, lines) = AsyncStream.makeStream(of: LogLine.self)
     let monitor = ProcessLogMonitor(database: database, clock: TestClock())
@@ -167,9 +143,8 @@ struct `Process log monitor tests` {
 
   @Test
   func `Records Both Process Streams Against A Binding`() async throws {
-    let temp = try TempDirectory()
-    let database = try database(temp)
-    let bindingID = try await binding(into: database)
+    let database = try TestDatabase.inMemory()
+    let bindingID = try await TailscaleBindingRecord.insertFixture(into: database)
 
     let out = Pipe()
     let err = Pipe()
@@ -200,9 +175,8 @@ struct `Process log monitor tests` {
 
   @Test
   func `Closes Both Handles Once Both Streams Finish`() async throws {
-    let temp = try TempDirectory()
-    let database = try database(temp)
-    let bindingID = try await binding(into: database)
+    let database = try TestDatabase.inMemory()
+    let bindingID = try await TailscaleBindingRecord.insertFixture(into: database)
 
     let out = Pipe()
     let err = Pipe()
@@ -231,9 +205,8 @@ struct `Process log monitor tests` {
 
   @Test
   func `Records A Pipes Output Against A Binding`() async throws {
-    let temp = try TempDirectory()
-    let database = try database(temp)
-    let bindingID = try await binding(into: database)
+    let database = try TestDatabase.inMemory()
+    let bindingID = try await TailscaleBindingRecord.insertFixture(into: database)
 
     let pipe = Pipe()
     let output = processOutputLines(

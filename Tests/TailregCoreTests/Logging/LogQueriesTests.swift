@@ -1,5 +1,6 @@
 import Foundation
 import SQLiteData
+import TailregTestSupport
 import Testing
 import UUIDV7
 
@@ -8,32 +9,6 @@ import UUIDV7
 @Suite
 struct `Log query tests` {
   private static let epoch = Date(timeIntervalSince1970: 1_700_000_000)
-
-  private func database(_ temp: TempDirectory) throws -> any DatabaseWriter {
-    try openTailregDatabase(path: temp.path("tailreg.sqlite"), kind: .queue)
-  }
-
-  private func binding(
-    tailnetPort: Int = 443,
-    endedAt: Date? = nil,
-    into database: any DatabaseWriter
-  ) async throws -> UUIDV7 {
-    let record = TailscaleBindingRecord(
-      hostname: "node.example.ts.net",
-      localPort: 3000,
-      tailnetPort: tailnetPort,
-      proto: .https,
-      mountPath: "/",
-      status: endedAt == nil ? .active : .ended,
-      createdAt: Self.epoch,
-      endedAt: endedAt,
-      endReason: endedAt == nil ? nil : .unbound
-    )
-    try await database.write { db in
-      try TailscaleBindingRecord.insert { record }.execute(db)
-    }
-    return record.id
-  }
 
   private func lines(
     _ messages: [String],
@@ -71,9 +46,8 @@ struct `Log query tests` {
 
   @Test
   func `Appends A Batch And Reads It Back In Order`() async throws {
-    let temp = try TempDirectory()
-    let database = try database(temp)
-    let bindingID = try await binding(into: database)
+    let database = try TestDatabase.inMemory()
+    let bindingID = try await TailscaleBindingRecord.insertFixture(into: database)
 
     try await append(["one", "two", "three"], for: bindingID, into: database)
 
@@ -82,9 +56,8 @@ struct `Log query tests` {
 
   @Test
   func `Preserves Arrival Order Across Separate Appends`() async throws {
-    let temp = try TempDirectory()
-    let database = try database(temp)
-    let bindingID = try await binding(into: database)
+    let database = try TestDatabase.inMemory()
+    let bindingID = try await TailscaleBindingRecord.insertFixture(into: database)
 
     try await append(["one", "two"], for: bindingID, into: database)
     try await append(["three"], for: bindingID, into: database)
@@ -99,10 +72,15 @@ struct `Log query tests` {
 
   @Test
   func `Keeps Two Bindings Logs Independent`() async throws {
-    let temp = try TempDirectory()
-    let database = try database(temp)
-    let first = try await binding(tailnetPort: 443, into: database)
-    let second = try await binding(tailnetPort: 8443, into: database)
+    let database = try TestDatabase.inMemory()
+    let first = try await TailscaleBindingRecord.insertFixture(
+      into: database,
+      tailnetPort: .fixed(443)
+    )
+    let second = try await TailscaleBindingRecord.insertFixture(
+      into: database,
+      tailnetPort: .fixed(8443)
+    )
 
     try await append(["alpha"], for: first, into: database)
     try await append(["beta", "gamma"], for: second, into: database)
@@ -113,9 +91,8 @@ struct `Log query tests` {
 
   @Test
   func `Appending Nothing Is A No Op`() async throws {
-    let temp = try TempDirectory()
-    let database = try database(temp)
-    let bindingID = try await binding(into: database)
+    let database = try TestDatabase.inMemory()
+    let bindingID = try await TailscaleBindingRecord.insertFixture(into: database)
 
     let written = try await database.write { db in
       try LogRecord.append([], for: bindingID, in: db)
@@ -127,9 +104,8 @@ struct `Log query tests` {
 
   @Test
   func `Records Which Stream A Line Came From`() async throws {
-    let temp = try TempDirectory()
-    let database = try database(temp)
-    let bindingID = try await binding(into: database)
+    let database = try TestDatabase.inMemory()
+    let bindingID = try await TailscaleBindingRecord.insertFixture(into: database)
 
     try await append(["out"], stream: .standardOutput, for: bindingID, into: database)
     try await append(["err"], stream: .standardError, for: bindingID, into: database)
@@ -142,8 +118,7 @@ struct `Log query tests` {
 
   @Test
   func `Rejects A Log For A Binding That Does Not Exist`() async throws {
-    let temp = try TempDirectory()
-    let database = try database(temp)
+    let database = try TestDatabase.inMemory()
 
     let reported = await #expect(throws: DatabaseError.self) {
       try await database.write { db in
@@ -156,9 +131,8 @@ struct `Log query tests` {
 
   @Test
   func `Rejects A Stream The Schema Does Not Know`() async throws {
-    let temp = try TempDirectory()
-    let database = try database(temp)
-    let bindingID = try await binding(into: database)
+    let database = try TestDatabase.inMemory()
+    let bindingID = try await TailscaleBindingRecord.insertFixture(into: database)
 
     let reported = await #expect(throws: DatabaseError.self) {
       try await database.write { db in
@@ -177,9 +151,8 @@ struct `Log query tests` {
 
   @Test
   func `Preserves A Message Verbatim`() async throws {
-    let temp = try TempDirectory()
-    let database = try database(temp)
-    let bindingID = try await binding(into: database)
+    let database = try TestDatabase.inMemory()
+    let bindingID = try await TailscaleBindingRecord.insertFixture(into: database)
 
     let awkward = [
       "\u{1B}[32mready\u{1B}[0m in 412 ms",
@@ -195,9 +168,8 @@ struct `Log query tests` {
 
   @Test
   func `Pages Forward Through A Cursor`() async throws {
-    let temp = try TempDirectory()
-    let database = try database(temp)
-    let bindingID = try await binding(into: database)
+    let database = try TestDatabase.inMemory()
+    let bindingID = try await TailscaleBindingRecord.insertFixture(into: database)
     try await append(["a", "b", "c", "d", "e"], for: bindingID, into: database)
 
     var seen: [String] = []
@@ -217,9 +189,8 @@ struct `Log query tests` {
 
   @Test
   func `Paging Past The End Yields Nothing`() async throws {
-    let temp = try TempDirectory()
-    let database = try database(temp)
-    let bindingID = try await binding(into: database)
+    let database = try TestDatabase.inMemory()
+    let bindingID = try await TailscaleBindingRecord.insertFixture(into: database)
     try await append(["a", "b"], for: bindingID, into: database)
 
     let last = try await database.read { db in
@@ -234,9 +205,8 @@ struct `Log query tests` {
 
   @Test
   func `Tails The Most Recent Lines`() async throws {
-    let temp = try TempDirectory()
-    let database = try database(temp)
-    let bindingID = try await binding(into: database)
+    let database = try TestDatabase.inMemory()
+    let bindingID = try await TailscaleBindingRecord.insertFixture(into: database)
     try await append(["a", "b", "c", "d", "e"], for: bindingID, into: database)
 
     let tail = try await database.read { db in
@@ -248,9 +218,8 @@ struct `Log query tests` {
 
   @Test
   func `Tails An Earlier Page Through An Offset`() async throws {
-    let temp = try TempDirectory()
-    let database = try database(temp)
-    let bindingID = try await binding(into: database)
+    let database = try TestDatabase.inMemory()
+    let bindingID = try await TailscaleBindingRecord.insertFixture(into: database)
     try await append(["a", "b", "c", "d", "e"], for: bindingID, into: database)
 
     let tail = try await database.read { db in
@@ -262,9 +231,8 @@ struct `Log query tests` {
 
   @Test
   func `Tailing Past The End Yields Nothing`() async throws {
-    let temp = try TempDirectory()
-    let database = try database(temp)
-    let bindingID = try await binding(into: database)
+    let database = try TestDatabase.inMemory()
+    let bindingID = try await TailscaleBindingRecord.insertFixture(into: database)
     try await append(["a", "b"], for: bindingID, into: database)
 
     let tail = try await database.read { db in
@@ -276,9 +244,8 @@ struct `Log query tests` {
 
   @Test
   func `Keeps Only The Last Lines When Pruned`() async throws {
-    let temp = try TempDirectory()
-    let database = try database(temp)
-    let bindingID = try await binding(into: database)
+    let database = try TestDatabase.inMemory()
+    let bindingID = try await TailscaleBindingRecord.insertFixture(into: database)
     try await append(["a", "b", "c", "d", "e"], for: bindingID, into: database)
 
     let removed = try await database.write { db in
@@ -291,9 +258,8 @@ struct `Log query tests` {
 
   @Test
   func `Pruning Below The Line Count Removes Nothing`() async throws {
-    let temp = try TempDirectory()
-    let database = try database(temp)
-    let bindingID = try await binding(into: database)
+    let database = try TestDatabase.inMemory()
+    let bindingID = try await TailscaleBindingRecord.insertFixture(into: database)
     try await append(["a", "b"], for: bindingID, into: database)
 
     let removed = try await database.write { db in
@@ -306,9 +272,8 @@ struct `Log query tests` {
 
   @Test
   func `Pruning To Zero Clears The Binding`() async throws {
-    let temp = try TempDirectory()
-    let database = try database(temp)
-    let bindingID = try await binding(into: database)
+    let database = try TestDatabase.inMemory()
+    let bindingID = try await TailscaleBindingRecord.insertFixture(into: database)
     try await append(["a", "b", "c"], for: bindingID, into: database)
 
     let removed = try await database.write { db in
@@ -321,10 +286,15 @@ struct `Log query tests` {
 
   @Test
   func `Pruning One Binding Leaves The Others Alone`() async throws {
-    let temp = try TempDirectory()
-    let database = try database(temp)
-    let first = try await binding(tailnetPort: 443, into: database)
-    let second = try await binding(tailnetPort: 8443, into: database)
+    let database = try TestDatabase.inMemory()
+    let first = try await TailscaleBindingRecord.insertFixture(
+      into: database,
+      tailnetPort: .fixed(443)
+    )
+    let second = try await TailscaleBindingRecord.insertFixture(
+      into: database,
+      tailnetPort: .fixed(8443)
+    )
     try await append(["a", "b", "c"], for: first, into: database)
     try await append(["x", "y", "z"], for: second, into: database)
 
@@ -338,17 +308,16 @@ struct `Log query tests` {
 
   @Test
   func `Drops Logs For Bindings Ended Before A Date`() async throws {
-    let temp = try TempDirectory()
-    let database = try database(temp)
-    let old = try await binding(
-      tailnetPort: 443,
-      endedAt: Self.epoch.addingTimeInterval(-3600),
-      into: database
+    let database = try TestDatabase.inMemory()
+    let old = try await TailscaleBindingRecord.insertFixture(
+      into: database,
+      tailnetPort: .fixed(443),
+      endedAt: Self.epoch.addingTimeInterval(-3600)
     )
-    let recent = try await binding(
-      tailnetPort: 8443,
-      endedAt: Self.epoch.addingTimeInterval(3600),
-      into: database
+    let recent = try await TailscaleBindingRecord.insertFixture(
+      into: database,
+      tailnetPort: .fixed(8443),
+      endedAt: Self.epoch.addingTimeInterval(3600)
     )
     try await append(["stale"], for: old, into: database)
     try await append(["fresh"], for: recent, into: database)
@@ -364,9 +333,8 @@ struct `Log query tests` {
 
   @Test
   func `Leaves A Live Bindings Logs Alone When Pruning By Date`() async throws {
-    let temp = try TempDirectory()
-    let database = try database(temp)
-    let bindingID = try await binding(into: database)
+    let database = try TestDatabase.inMemory()
+    let bindingID = try await TailscaleBindingRecord.insertFixture(into: database)
     try await append(["running"], for: bindingID, into: database)
 
     let removed = try await database.write { db in
@@ -379,9 +347,8 @@ struct `Log query tests` {
 
   @Test
   func `Appends And Prunes In One Transaction`() async throws {
-    let temp = try TempDirectory()
-    let database = try database(temp)
-    let bindingID = try await binding(into: database)
+    let database = try TestDatabase.inMemory()
+    let bindingID = try await TailscaleBindingRecord.insertFixture(into: database)
     try await append(["a", "b"], for: bindingID, into: database)
 
     try await database.write { db in
@@ -394,9 +361,8 @@ struct `Log query tests` {
 
   @Test
   func `Removes Logs When Their Binding Is Deleted`() async throws {
-    let temp = try TempDirectory()
-    let database = try database(temp)
-    let bindingID = try await binding(into: database)
+    let database = try TestDatabase.inMemory()
+    let bindingID = try await TailscaleBindingRecord.insertFixture(into: database)
     try await append(["a", "b"], for: bindingID, into: database)
 
     try await database.write { db in

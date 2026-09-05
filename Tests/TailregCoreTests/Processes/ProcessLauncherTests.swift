@@ -33,8 +33,11 @@ struct `Process launcher tests` {
   func `Passes Parsed Arguments Literally Without A Shell`() async throws {
     let process = try launcher.launch(
       ProcessCommand(
-        executable: printfPath(),
-        arguments: ["%s\\n", "space value", "$(not expanded)", "; not executed", "*.swift"]
+        executable: "/bin/sh",
+        arguments: [
+          "-c", "printf '%s\\n' \"$@\"", "tailreg-argument-fixture",
+          "space value", "$(not expanded)", "; not executed", "*.swift"
+        ]
       )
     )
 
@@ -73,7 +76,7 @@ struct `Process launcher tests` {
     }
     #expect(throws: ProcessLaunchError.nulByte) {
       _ = try launcher.launch(
-        ProcessCommand(executable: printfPath(), arguments: ["bad\0argument"])
+        ProcessCommand(executable: "/bin/sh", arguments: ["bad\0argument"])
       )
     }
   }
@@ -92,7 +95,9 @@ struct `Process launcher tests` {
 
   @Test
   func `Terminates ALaunchedChild`() async throws {
-    let process = try launcher.launch(ProcessCommand(executable: sleepPath(), arguments: ["30"]))
+    let process = try launcher.launch(
+      ProcessCommand(executable: "/bin/sh", arguments: ["-c", "exec sleep 30"])
+    )
     try await Task.sleep(for: .milliseconds(100))
     process.terminate()
 
@@ -106,15 +111,5 @@ struct `Process launcher tests` {
       collected.append(line)
     }
     return collected
-  }
-
-  private func printfPath() -> String {
-    ["/usr/bin/printf", "/bin/printf"].first { FileManager.default.isExecutableFile(atPath: $0) }
-      ?? "/usr/bin/printf"
-  }
-
-  private func sleepPath() -> String {
-    ["/usr/bin/sleep", "/bin/sleep"].first { FileManager.default.isExecutableFile(atPath: $0) }
-      ?? "/usr/bin/sleep"
   }
 }

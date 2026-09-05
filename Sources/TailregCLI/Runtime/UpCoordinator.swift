@@ -308,7 +308,7 @@ struct UpCoordinator: Sendable {
         pid: process.map { Int($0.pid) },
         processGroupID: process.flatMap { ProcessGroupID(getpgid($0.pid)) }
           .map { Int($0.rawValue) },
-        processStartedAt: process.flatMap { processStartTime(of: $0.pid) }
+        processStartedAt: process.flatMap { RecordedProcess(observing: $0.pid)?.startedAt }
       )
       do {
         try await database.write { database in

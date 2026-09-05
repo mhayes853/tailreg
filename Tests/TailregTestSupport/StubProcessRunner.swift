@@ -1,27 +1,34 @@
 import Foundation
 import TailregCore
 
-final class StubProcessRunner: ProcessRunner, @unchecked Sendable {
+public final class StubProcessRunner: ProcessRunner, @unchecked Sendable {
   private struct Response {
     let prefix: [String]
     let result: ProcessResult
   }
 
+  public init() {}
+
   private let lock = NSLock()
   private var responses: [Response] = []
   private var launchFailure: String?
 
-  func stub(_ prefix: [String], stdout: String = "", stderr: String = "", exitCode: Int32 = 0) {
+  public func stub(
+    _ prefix: [String],
+    stdout: String = "",
+    stderr: String = "",
+    exitCode: Int32 = 0
+  ) {
     lock.withLock {
       responses.append(Response(prefix: prefix, result: Self.result(stdout, stderr, exitCode)))
     }
   }
 
-  func failToLaunch(message: String = "no such file") {
+  public func failToLaunch(message: String = "no such file") {
     lock.withLock { launchFailure = message }
   }
 
-  func run(
+  public func run(
     executable: String,
     arguments: [String],
     environment: [String: String]?,

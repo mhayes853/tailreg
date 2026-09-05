@@ -2,6 +2,29 @@ import Foundation
 import SQLiteData
 import UUIDV7
 
+@Table("logs")
+public struct LogRecord: Hashable, Sendable {
+  public let id: UUIDV7
+  public var bindingID: UUIDV7
+  public var stream: ProcessStream
+  public var message: String
+  public var at: Date
+
+  public init(
+    id: UUIDV7 = UUIDV7(),
+    bindingID: UUIDV7,
+    stream: ProcessStream,
+    message: String,
+    at: Date
+  ) {
+    self.id = id
+    self.bindingID = bindingID
+    self.stream = stream
+    self.message = message
+    self.at = at
+  }
+}
+
 extension LogRecord.TableColumns {
   public func belongs(to bindingID: UUIDV7) -> some QueryExpression<Bool> {
     self.bindingID.eq(bindingID)

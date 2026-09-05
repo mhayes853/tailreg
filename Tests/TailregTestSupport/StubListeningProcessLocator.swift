@@ -1,10 +1,10 @@
 import TailregCore
 
-struct StubListeningProcessLocator: ListeningProcessLocator {
-  var processesByPort: [PortNumber: [ListeningProcess]]
-  var failure: ListeningProcessError?
+public struct StubListeningProcessLocator: ListeningProcessLocator {
+  public var processesByPort: [PortNumber: [ListeningProcess]]
+  public var failure: ListeningProcessError?
 
-  init(
+  public init(
     processesByPort: [PortNumber: [ListeningProcess]] = [:],
     failure: ListeningProcessError? = nil
   ) {
@@ -12,7 +12,7 @@ struct StubListeningProcessLocator: ListeningProcessLocator {
     self.failure = failure
   }
 
-  func processes(listeningOn port: PortNumber) async throws -> [ListeningProcess] {
+  public func processes(listeningOn port: PortNumber) async throws -> [ListeningProcess] {
     if let failure { throw failure }
     return processesByPort[port] ?? []
   }

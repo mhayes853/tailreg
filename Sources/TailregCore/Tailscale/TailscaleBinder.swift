@@ -63,7 +63,7 @@ public actor TailscaleBinder {
 
   @discardableResult
   public func bind(
-    localPort: Int,
+    localPort: PortNumber,
     to tailnetPort: TailscaleTailnetPort = .auto,
     mountPath: String = "/"
   ) async throws -> TailscaleBinding {
@@ -77,7 +77,7 @@ public actor TailscaleBinder {
   // MARK: - Unbinding
 
   @discardableResult
-  public func unbind(tailnetPort: Int) async throws -> [TailscaleBinding] {
+  public func unbind(tailnetPort: PortNumber) async throws -> [TailscaleBinding] {
     try await gate.withGate {
       try await self.fileLock.withLock(.exclusive) {
         try await self.performRemove { $0.tailnetPort == tailnetPort }
@@ -87,7 +87,8 @@ public actor TailscaleBinder {
 
   /// Removes one mount, leaving anything else served on the same tailnet port alone.
   @discardableResult
-  public func unbind(tailnetPort: Int, mountPath: String) async throws -> [TailscaleBinding] {
+  public func unbind(tailnetPort: PortNumber, mountPath: String) async throws -> [TailscaleBinding]
+  {
     try await gate.withGate {
       try await self.fileLock.withLock(.exclusive) {
         try await self.performRemove { $0.tailnetPort == tailnetPort && $0.mountPath == mountPath }
@@ -96,7 +97,7 @@ public actor TailscaleBinder {
   }
 
   @discardableResult
-  public func unbind(localPort: Int) async throws -> [TailscaleBinding] {
+  public func unbind(localPort: PortNumber) async throws -> [TailscaleBinding] {
     try await gate.withGate {
       try await self.fileLock.withLock(.exclusive) {
         try await self.performRemove { $0.localPort == localPort }
@@ -116,13 +117,13 @@ public actor TailscaleBinder {
   // MARK: - Operations
 
   private func performBind(
-    localPort: Int,
+    localPort: PortNumber,
     to tailnetPort: TailscaleTailnetPort,
     mountPath: String
   ) async throws -> TailscaleBinding {
     let status = try await requireRunning()
 
-    guard let probePort = PortNumber(localPort), await portProbe.isListening(port: probePort) else {
+    guard await portProbe.isListening(port: localPort) else {
       throw TailscaleError.noLocalServerListening(port: localPort)
     }
 
@@ -285,7 +286,7 @@ public actor TailscaleBinder {
     mountPath: String,
     live: [TailscaleBinding],
     claimed: [TailscaleBindingRecord]
-  ) throws -> Int {
+  ) throws -> PortNumber {
     switch requested {
     case .explicit(let port):
       if let clash = live.first(where: { $0.tailnetPort == port && $0.mountPath == mountPath }) {

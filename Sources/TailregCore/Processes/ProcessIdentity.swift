@@ -6,13 +6,55 @@ import Foundation
   import Glibc
 #endif
 
-/// When a process began, as whole seconds since the epoch.
+/// A process as it was recorded: the PID, and the start time that proves the PID still names it.
 ///
-/// This exists to tell one process from another that happens to hold the same PID. Tailreg
-/// persists PIDs and process-group IDs, and those records can outlive the machine's uptime, so a
-/// stored PID alone is not evidence: the kernel recycles PID numbers, and signalling a recycled
-/// one would reach an unrelated process. Recording the start time alongside the PID turns "is
-/// this still our process?" into a question that can actually be answered.
+/// Tailreg persists PIDs and process-group IDs, and those records can outlive the machine's
+/// uptime, so a stored PID alone is not evidence: the kernel recycles PID numbers, and signalling
+/// a recycled one would reach an unrelated process. Pairing the number with the start time turns
+/// "is this still our process?" into a question that can actually be answered.
+public struct RecordedProcess: Hashable, Sendable {
+  public let pid: pid_t
+  /// Nil when the start time could not be read when the process was recorded.
+  public let startedAt: Int64?
+
+  public init?(pid: some BinaryInteger, startedAt: Int64?) {
+    guard let pid = pid_t(exactly: pid), pid > 0 else { return nil }
+    self.pid = pid
+    self.startedAt = startedAt
+  }
+
+  /// Takes a PID whose positivity a database CHECK constraint has already established.
+  ///
+  /// A record that was never stored can still carry a nonsensical PID. That resolves to `.gone`
+  /// rather than trapping, which is what a number no process can hold amounts to.
+  init(recorded pid: some BinaryInteger, startedAt: Int64?) {
+    self.pid = pid_t(truncatingIfNeeded: pid)
+    self.startedAt = startedAt
+  }
+
+  /// Reads the start time now, for a process that was just launched.
+  public init?(observing pid: some BinaryInteger) {
+    guard let pid = pid_t(exactly: pid) else { return nil }
+    self.init(pid: pid, startedAt: processStartTime(of: pid))
+  }
+
+  public var liveness: ProcessLiveness {
+    guard let startedAt else { return .unverifiable }
+    return processStartTime(of: pid) == startedAt ? .running : .gone
+  }
+}
+
+/// Whether a recorded process is still the one that was recorded.
+public enum ProcessLiveness: Hashable, Sendable {
+  /// The PID names a process whose start time matches the record.
+  case running
+  /// A start time was recorded and no longer matches: the process is provably gone.
+  case gone
+  /// No start time was recorded, so the identity can neither be confirmed nor disproved.
+  case unverifiable
+}
+
+/// When a process began, as whole seconds since the epoch.
 ///
 /// Whole seconds are deliberate. The two platforms report start times at different resolutions
 /// and in different domains, and both are reduced here to the same absolute second so that a
@@ -26,20 +68,10 @@ public func processStartTime(of pid: Int32) -> Int64? {
   #endif
 }
 
-/// Whether a PID still identifies the process that was recorded with this start time.
-///
-/// A `nil` witness means the start time could not be read when the process was recorded, so the
-/// identity cannot be confirmed. Callers decide what to do with that; this deliberately reports
-/// `false` rather than assuming the process is still ours.
-public func processMatches(pid: Int32, startedAt witness: Int64?) -> Bool {
-  guard let witness, let current = processStartTime(of: pid) else { return false }
-  return current == witness
-}
-
 /// Whether a PID currently names a process at all.
 ///
 /// This says nothing about *which* process: the number may have been recycled since it was
-/// recorded. Prefer `processMatches` wherever a start time was recorded alongside the PID.
+/// recorded. Prefer ``RecordedProcess/liveness`` wherever a start time was recorded with the PID.
 public func processIsAlive(_ value: some BinaryInteger) -> Bool {
   let pid = pid_t(truncatingIfNeeded: value)
   guard pid > 0 else { return false }

@@ -1,12 +1,13 @@
 import Foundation
-#if canImport(FoundationNetworking)
-  import FoundationNetworking
-#endif
 import SQLiteData
 import TailregCore
 import Testing
 
 @testable import TailregCLI
+
+#if canImport(FoundationNetworking)
+  import FoundationNetworking
+#endif
 
 #if canImport(Darwin)
   import Darwin
@@ -92,8 +93,7 @@ struct `Down coordinator E2E tests` {
     #expect(await MuxAdminClient(port: runtime.adminPort).isReady() == false)
     #expect(try await context.runtime() == nil)
     #expect(try await context.liveRunNames() == [])
-    let ingress = try #require(PortNumber(runtime.ingressPort))
-    #expect(await SystemPortProbe().isListening(port: ingress) == false)
+    #expect(await SystemPortProbe().isListening(port: runtime.ingressPort) == false)
   }
 
   private final class Context {

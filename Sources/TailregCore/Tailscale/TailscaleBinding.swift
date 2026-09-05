@@ -1,8 +1,9 @@
 import Foundation
+import SQLiteData
 import UUIDV7
 
 public enum TailscaleServeTarget: Sendable, Equatable {
-  case localPort(Int)
+  case localPort(PortNumber)
   case proxy(String)
   case path(String)
   case text(String)
@@ -14,15 +15,19 @@ public enum TailscaleBindingStatus: String, Sendable, Codable, CaseIterable, Equ
   case ended
 }
 
+extension TailscaleBindingStatus: QueryBindable, QueryDecodable {}
+
 public enum TailscaleBindingEndReason: String, Sendable, Codable, CaseIterable, Equatable {
   case unbound
   case expired
   case failed
 }
 
+extension TailscaleBindingEndReason: QueryBindable, QueryDecodable {}
+
 public struct TailscaleBinding: Sendable, Equatable {
   public let hostname: String
-  public let tailnetPort: Int
+  public let tailnetPort: PortNumber
   public let proto: TailscaleServeProtocol
   public let mountPath: String
   public let target: TailscaleServeTarget
@@ -31,7 +36,7 @@ public struct TailscaleBinding: Sendable, Equatable {
 
   public init(
     hostname: String,
-    tailnetPort: Int,
+    tailnetPort: PortNumber,
     proto: TailscaleServeProtocol,
     mountPath: String,
     target: TailscaleServeTarget,
@@ -49,7 +54,7 @@ public struct TailscaleBinding: Sendable, Equatable {
 
   public var isManaged: Bool { recordID != nil }
 
-  public var localPort: Int? {
+  public var localPort: PortNumber? {
     guard case .localPort(let port) = target else { return nil }
     return port
   }
@@ -70,13 +75,14 @@ public struct TailscaleBinding: Sendable, Equatable {
 /// binding can never disagree about the URL they describe.
 func tailscaleURL(
   hostname: String,
-  tailnetPort: Int,
+  tailnetPort: PortNumber,
   proto: TailscaleServeProtocol,
   mountPath: String
 ) -> URL? {
   guard let scheme = proto.urlScheme else { return nil }
   let isDefaultPort =
-    (scheme == "https" && tailnetPort == 443) || (scheme == "http" && tailnetPort == 80)
+    (scheme == "https" && tailnetPort.rawValue == 443)
+    || (scheme == "http" && tailnetPort.rawValue == 80)
   let authority = isDefaultPort ? hostname : "\(hostname):\(tailnetPort)"
   return URL(string: "\(scheme)://\(authority)\(mountPath)")
 }

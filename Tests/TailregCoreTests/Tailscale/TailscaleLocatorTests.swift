@@ -1,4 +1,5 @@
 import TailregCore
+import TailregTestSupport
 import Testing
 
 @Suite

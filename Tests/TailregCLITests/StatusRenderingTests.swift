@@ -21,8 +21,8 @@ struct `Status rendering tests` {
         mux: MuxStatus(
           state: .running,
           pid: 48_213,
-          ingressPort: 39_428,
-          adminPort: 39_429,
+          ingressPort: .fixed(39_428),
+          adminPort: .fixed(39_429),
           startedAt: now.addingTimeInterval(-14 * 60)
         ),
         applications: [
@@ -89,8 +89,8 @@ struct `Status rendering tests` {
         mux: MuxStatus(
           state: .unreachable,
           pid: 48_213,
-          ingressPort: 39_428,
-          adminPort: 39_429,
+          ingressPort: .fixed(39_428),
+          adminPort: .fixed(39_429),
           startedAt: now.addingTimeInterval(-(3 * 3600 + 12 * 60))
         ),
         applications: [
@@ -192,8 +192,8 @@ struct `Status rendering tests` {
         mux: MuxStatus(
           state: .running,
           pid: 48_213,
-          ingressPort: 39_428,
-          adminPort: 39_429,
+          ingressPort: .fixed(39_428),
+          adminPort: .fixed(39_429),
           startedAt: Date(timeIntervalSince1970: 1_700_000_000)
         ),
         applications: [

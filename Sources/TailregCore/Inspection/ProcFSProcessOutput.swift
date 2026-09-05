@@ -12,7 +12,8 @@
 
     private static func target(pid: Int32, descriptor: Int32) -> ProcessOutputTarget {
       let descriptorPath = "/proc/\(pid)/fd/\(descriptor)"
-      guard let destination = try? FileManager.default.destinationOfSymbolicLink(atPath: descriptorPath)
+      guard
+        let destination = try? FileManager.default.destinationOfSymbolicLink(atPath: descriptorPath)
       else {
         return processExists(pid) ? .unavailable(.inaccessible) : .unavailable(.processExited)
       }

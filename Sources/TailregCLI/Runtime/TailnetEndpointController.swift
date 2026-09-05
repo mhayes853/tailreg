@@ -25,7 +25,7 @@ struct TailnetEndpointController: TailnetEndpointRemoving {
   /// an existing binding's adds one rather than moving it, and each run holds exactly the
   /// binding it asked for.
   func ensure(
-    ingressPort: Int,
+    ingressPort: PortNumber,
     exposure: ProjectExposure,
     requestedPort: PortNumber? = nil
   ) async throws -> TailnetEndpoint {
@@ -37,7 +37,7 @@ struct TailnetEndpointController: TailnetEndpointRemoving {
     let existing = try await binder.bindings()
       .first { binding in
         binding.localPort == ingressPort && binding.mountPath == "/"
-          && (requestedPort.map { $0.intValue == binding.tailnetPort } ?? true)
+          && (requestedPort.map { $0 == binding.tailnetPort } ?? true)
       }
     let binding: TailscaleBinding
     if let existing {
@@ -45,7 +45,7 @@ struct TailnetEndpointController: TailnetEndpointRemoving {
     } else {
       binding = try await binder.bind(
         localPort: ingressPort,
-        to: requestedPort.map { .explicit($0.intValue) } ?? .auto,
+        to: requestedPort.map { .explicit($0) } ?? .auto,
         mountPath: "/"
       )
     }

@@ -75,20 +75,6 @@ struct `PortNumber tests` {
   }
 
   @Test
-  func `Classifies The Privileged Range`() {
-    #expect(PortNumber(80)!.isPrivileged)
-    #expect(PortNumber(1023)!.isPrivileged)
-    #expect(!PortNumber(1024)!.isPrivileged)
-  }
-
-  @Test
-  func `Classifies The Ephemeral Range`() {
-    #expect(!PortNumber(49151)!.isEphemeral)
-    #expect(PortNumber(49152)!.isEphemeral)
-    #expect(PortNumber(65535)!.isEphemeral)
-  }
-
-  @Test
   func `Orders By Number`() {
     let ports = [PortNumber(8080)!, PortNumber(443)!, PortNumber(3000)!]
 

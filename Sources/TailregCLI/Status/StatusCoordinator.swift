@@ -27,13 +27,13 @@ struct StatusCoordinator: Sendable {
   private let databasePath: String
   private let currentDirectory: URL
   private let portProbe: any PortProbe
-  private let muxIsReady: @Sendable (Int) async -> Bool
+  private let muxIsReady: @Sendable (PortNumber) async -> Bool
 
   init(
     databasePath: String = defaultTailregDatabasePath(),
     currentDirectory: URL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath),
     portProbe: any PortProbe = SystemPortProbe(),
-    muxIsReady: @escaping @Sendable (Int) async -> Bool = { port in
+    muxIsReady: @escaping @Sendable (PortNumber) async -> Bool = { port in
       await MuxAdminClient(port: port).isReady()
     }
   ) {
@@ -260,8 +260,11 @@ struct StatusCoordinator: Sendable {
   ) async -> ApplicationStatus.State {
     switch run.ownership {
     case .managed:
-      guard run.processStartedAt != nil else { return .unverified }
-      return run.hasMatchingProcess ? .running : .stale
+      switch run.process?.liveness {
+      case .running: return .running
+      case .gone: return .stale
+      case .unverifiable, nil: return .unverified
+      }
     case .attached:
       guard let upstream = route.flatMap({ URL(string: $0.upstreamURL) }),
         let host = upstream.host,
@@ -327,7 +330,7 @@ struct StatusCoordinator: Sendable {
           subject: "mux",
           kind: .unreachable,
           detail:
-            "alive as pid \(mux.pid ?? 0), not answering on admin port \(mux.adminPort ?? 0)"
+            "alive as pid \(mux.pid ?? 0), not answering on admin port \(mux.adminPort?.description ?? "0")"
         )
       )
     case .stale:

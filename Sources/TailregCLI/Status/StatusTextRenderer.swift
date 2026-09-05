@@ -119,7 +119,7 @@ struct StatusTextRenderer: Sendable {
       rows: bindings.map { binding in
         [
           binding.url?.absoluteString ?? "-",
-          String(binding.tailnetPort),
+          binding.tailnetPort.description,
           binding.holders.isEmpty ? "-" : binding.holders.joined(separator: ", ")
         ]
       }
@@ -134,8 +134,8 @@ struct StatusTextRenderer: Sendable {
         [
           mux.state.label,
           mux.pid.map(String.init) ?? "-",
-          mux.ingressPort.map(String.init) ?? "-",
-          mux.adminPort.map(String.init) ?? "-",
+          mux.ingressPort?.description ?? "-",
+          mux.adminPort?.description ?? "-",
           mux.startedAt.map { uptime(since: $0, now: now) } ?? "-"
         ]
       ]

@@ -12,6 +12,8 @@ A simple Swift based solution for managing local deployments through a tailnet.
 - `tailreg` is the executable entry point.
 - TailregMultiplexerE2EFixture is a test-only executable used by the browser
   tests.
+- TailregTestSupport holds the fixtures, stubs, and process/socket helpers that
+  every test target shares.
 
 ## Bringing up a project
 

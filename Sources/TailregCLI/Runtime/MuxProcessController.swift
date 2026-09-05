@@ -71,8 +71,8 @@ struct MuxProcessController: Sendable {
         "_mux-run",
         "--database-path", databasePath,
         "--mux-id", project.muxID.uuidString,
-        "--ingress-port", String(ports.ingress),
-        "--admin-port", String(ports.admin)
+        "--ingress-port", ports.ingress.description,
+        "--admin-port", ports.admin.description
       ] + (exposure == .tailnet ? [] : ["--insecure-cookies"])
     process.standardInput = FileHandle.nullDevice
 
@@ -89,7 +89,7 @@ struct MuxProcessController: Sendable {
     let run = MuxRunRecord(
       projectID: project.id,
       pid: Int(process.processIdentifier),
-      processStartedAt: processStartTime(of: process.processIdentifier),
+      processStartedAt: RecordedProcess(observing: process.processIdentifier)?.startedAt,
       ingressPort: ports.ingress,
       adminPort: ports.admin,
       exposure: exposure
@@ -171,19 +171,17 @@ struct MuxProcessController: Sendable {
   private func allocatePorts(
     seed: String,
     attempt: Int
-  ) async throws -> (ingress: Int, admin: Int) {
+  ) async throws -> (ingress: PortNumber, admin: PortNumber) {
     let portProbe = SystemPortProbe()
-    let pool = Array(39_100...39_999)
+    let pool = (39_100...39_999).compactMap(PortNumber.init)
     let offset =
       attempt == 0
       ? seed.utf8.reduce(0) { ($0 &* 31 &+ Int($1)) % pool.count }
       : Int.random(in: 0..<pool.count)
-    var free: [Int] = []
+    var free: [PortNumber] = []
     for index in 0..<pool.count {
       let candidate = pool[(offset + index) % pool.count]
-      guard let port = PortNumber(candidate), !(await portProbe.isListening(port: port)) else {
-        continue
-      }
+      guard !(await portProbe.isListening(port: candidate)) else { continue }
       free.append(candidate)
       if free.count == 2 { return (free[0], free[1]) }
     }

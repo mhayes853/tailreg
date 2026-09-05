@@ -8,7 +8,7 @@ import UUIDV7
 #endif
 
 struct MuxAdminClient: Sendable {
-  let port: Int
+  let port: PortNumber
 
   /// Whether anything answers on the admin port.
   func isReady() async -> Bool {

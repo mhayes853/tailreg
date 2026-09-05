@@ -1,15 +1,15 @@
 import Foundation
 import TailregCore
 
-final class FakeTailscaleDaemon: ProcessRunner, @unchecked Sendable {
-  struct Handler: Equatable {
-    var tailnetPort: Int
-    var mountPath: String
-    var localPort: Int
-    var proto: String
-    var funnel: Bool
+public final class FakeTailscaleDaemon: ProcessRunner, @unchecked Sendable {
+  public struct Handler: Equatable {
+    public var tailnetPort: Int
+    public var mountPath: String
+    public var localPort: Int
+    public var proto: String
+    public var funnel: Bool
 
-    init(
+    public init(
       tailnetPort: Int,
       mountPath: String = "/",
       localPort: Int,
@@ -28,11 +28,11 @@ final class FakeTailscaleDaemon: ProcessRunner, @unchecked Sendable {
   private var handlers: [Handler]
   private var recorded: [[String]] = []
 
-  let hostname: String
+  public let hostname: String
   private let backendState: String
   private let serveFailure: (stderr: String, exitCode: Int32)?
 
-  init(
+  public init(
     handlers: [Handler] = [],
     hostname: String = "node.example.ts.net",
     backendState: String = "Running",
@@ -44,29 +44,29 @@ final class FakeTailscaleDaemon: ProcessRunner, @unchecked Sendable {
     self.serveFailure = serveFailure
   }
 
-  var argvHistory: [[String]] { lock.withLock { recorded } }
+  public var argvHistory: [[String]] { lock.withLock { recorded } }
 
-  var configuredHandlers: [Handler] {
+  public var configuredHandlers: [Handler] {
     lock.withLock {
       handlers.sorted { ($0.tailnetPort, $0.mountPath) < ($1.tailnetPort, $1.mountPath) }
     }
   }
 
-  func argv(startingWith prefix: [String]) -> [[String]] {
+  public func argv(startingWith prefix: [String]) -> [[String]] {
     argvHistory.filter { $0.starts(with: prefix) }
   }
 
-  func addHandlerExternally(_ handler: Handler) {
+  public func addHandlerExternally(_ handler: Handler) {
     lock.withLock { handlers.append(handler) }
   }
 
-  func removeAllHandlersExternally() {
+  public func removeAllHandlersExternally() {
     lock.withLock { handlers.removeAll() }
   }
 
   // MARK: - ProcessRunner
 
-  func run(
+  public func run(
     executable: String,
     arguments: [String],
     environment: [String: String]?,

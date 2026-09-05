@@ -17,8 +17,8 @@ struct `Project runtime teardown tests` {
     let context = try Context()
     defer { context.cleanUp() }
     let runtime = try context.insertRuntime()
-    let held = try context.insertBinding(tailnetPort: 443)
-    let unheld = try context.insertBinding(tailnetPort: 8443)
+    let held = try context.insertBinding(tailnetPort: .fixed(443))
+    let unheld = try context.insertBinding(tailnetPort: .fixed(8443))
     try context.insertRun("api", holding: held)
     try context.insertRun("web", holding: held)
 
@@ -34,7 +34,7 @@ struct `Project runtime teardown tests` {
     let context = try Context()
     defer { context.cleanUp() }
     let runtime = try context.insertRuntime()
-    let held = try context.insertBinding(tailnetPort: 443)
+    let held = try context.insertBinding(tailnetPort: .fixed(443))
     try context.insertRun("api", holding: held)
 
     let result = await context.teardown(routes: 1).stopIfUnused(runtime, unbindingAll: true)
@@ -50,7 +50,7 @@ struct `Project runtime teardown tests` {
     let context = try Context()
     defer { context.cleanUp() }
     let runtime = try context.insertRuntime()
-    let binding = try context.insertBinding(tailnetPort: 443)
+    let binding = try context.insertBinding(tailnetPort: .fixed(443))
 
     let result = await context.teardown(routes: 0).stopIfUnused(runtime)
 
@@ -67,7 +67,7 @@ struct `Project runtime teardown tests` {
     let context = try Context()
     defer { context.cleanUp() }
     let runtime = try context.insertRuntime()
-    let binding = try context.insertBinding(tailnetPort: 443)
+    let binding = try context.insertBinding(tailnetPort: .fixed(443))
     await context.endpoints.fail()
 
     let result = await context.teardown(routes: 0).stopIfUnused(runtime)
@@ -132,24 +132,24 @@ struct `Project runtime teardown tests` {
       let runtime = MuxRunRecord(
         projectID: project.id,
         pid: 1,
-        ingressPort: 39_428,
-        adminPort: 39_429,
+        ingressPort: .fixed(39_428),
+        adminPort: .fixed(39_429),
         exposure: .tailnet
       )
       try database.write { db in try MuxRunRecord.insert { runtime }.execute(db) }
       return runtime
     }
 
-    func insertBinding(tailnetPort: Int) throws -> TailscaleBindingRecord {
+    func insertBinding(tailnetPort: PortNumber) throws -> TailscaleBindingRecord {
       let binding = TailscaleBindingRecord(
         hostname: "demo.tail1234.ts.net",
-        localPort: 39_428,
+        localPort: .fixed(39_428),
         tailnetPort: tailnetPort,
         proto: .https,
         mountPath: "/",
         status: .active,
         // Whole seconds, so the record read back compares equal to the one inserted.
-        createdAt: Date(timeIntervalSince1970: 1_700_000_000 + Double(tailnetPort))
+        createdAt: Date(timeIntervalSince1970: 1_700_000_000 + Double(tailnetPort.rawValue))
       )
       try database.write { db in try TailscaleBindingRecord.insert { binding }.execute(db) }
       return binding

@@ -1,4 +1,5 @@
 import Foundation
+import SQLiteData
 
 /// A TCP or UDP port number.
 ///
@@ -30,6 +31,13 @@ public struct PortNumber: RawRepresentable, Sendable, Hashable, Comparable, Coda
     self.init(rawValue: UInt16(bigEndian: value))
   }
 
+  /// Reads a port written in decimal, as command-line arguments and the Tailscale daemon's
+  /// serve configuration both write it.
+  public init?(text: some StringProtocol) {
+    guard let value = UInt16(text) else { return nil }
+    self.init(rawValue: value)
+  }
+
   /// Reads the port half of a `/proc/net/tcp` `local_address` field.
   public init?(hex: some StringProtocol) {
     guard let value = UInt16(hex, radix: 16) else { return nil }
@@ -44,17 +52,16 @@ public struct PortNumber: RawRepresentable, Sendable, Hashable, Comparable, Coda
   /// The port as a plain integer, for the many system APIs typed that way.
   public var intValue: Int { Int(rawValue) }
 
-  /// Ports below 1024 need root to bind, so a dev server on one is nearly always a mistake.
-  public var isPrivileged: Bool { rawValue < 1024 }
-
-  /// The IANA dynamic range. The kernel hands these out for `bind` on port 0, so a port
-  /// recorded from this range can be taken by another process across a restart.
-  public var isEphemeral: Bool { rawValue >= 49152 }
-
   public static func < (lhs: PortNumber, rhs: PortNumber) -> Bool {
     lhs.rawValue < rhs.rawValue
   }
 }
+
+// MARK: - Persistence
+
+/// Stored as the `UInt16` it wraps, so a column holding a port is an ordinary INTEGER and the
+/// range check the schema already carries stays the one place the bound is written down.
+extension PortNumber: QueryBindable, QueryDecodable {}
 
 // MARK: - Codable
 

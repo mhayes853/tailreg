@@ -1,5 +1,5 @@
-enum Fixtures {
-  static let liveServeStatus = """
+public enum Fixtures {
+  public static let liveServeStatus = """
     {
       "TCP": { "443": { "HTTPS": true } },
       "Web": {
@@ -10,7 +10,7 @@ enum Fixtures {
     }
     """
 
-  static let multiPathServeStatus = """
+  public static let multiPathServeStatus = """
     {
       "TCP": { "8443": { "HTTPS": true } },
       "Web": {
@@ -26,7 +26,7 @@ enum Fixtures {
     }
     """
 
-  static let tcpForwardServeStatus = """
+  public static let tcpForwardServeStatus = """
     {
       "TCP": {
         "2222": { "TCPForward": "127.0.0.1:22" },
@@ -35,7 +35,7 @@ enum Fixtures {
     }
     """
 
-  static let nodeStatus = """
+  public static let nodeStatus = """
     {
       "Version": "1.102.3",
       "BackendState": "Running",
@@ -43,7 +43,7 @@ enum Fixtures {
     }
     """
 
-  static let stoppedNodeStatus = """
+  public static let stoppedNodeStatus = """
     {
       "Version": "1.102.3",
       "BackendState": "Stopped",

@@ -1,5 +1,6 @@
 import Foundation
 import SQLiteData
+import TailregTestSupport
 import Testing
 import UUIDV7
 
@@ -7,10 +8,6 @@ import UUIDV7
 
 @Suite
 struct `HTTP capture schema tests` {
-  private func database(_ temp: TempDirectory) throws -> any DatabaseWriter {
-    try openTailregDatabase(path: temp.path("tailreg.sqlite"), kind: .queue)
-  }
-
   private func route(
     name: String,
     route: String,
@@ -31,8 +28,7 @@ struct `HTTP capture schema tests` {
 
   @Test
   func `Round trips an exchange with duplicate headers and bodies`() async throws {
-    let temp = try TempDirectory()
-    let database = try database(temp)
+    let database = try TestDatabase.inMemory()
     let (mux, route) = route(
       name: "web",
       route: "web-0",
@@ -95,8 +91,7 @@ struct `HTTP capture schema tests` {
 
   @Test
   func `Stores an omitted marker without a partial body`() async throws {
-    let temp = try TempDirectory()
-    let database = try database(temp)
+    let database = try TestDatabase.inMemory()
     let (mux, route) = route(name: "download", route: "download-0")
     let exchange = HTTPExchangeRecord(
       routeID: route.id,
@@ -130,8 +125,7 @@ struct `HTTP capture schema tests` {
 
   @Test
   func `Round trips a classification with multiple and unknown tags`() async throws {
-    let temp = try TempDirectory()
-    let database = try database(temp)
+    let database = try TestDatabase.inMemory()
     let (mux, route) = route(name: "web", route: "web-0")
     let exchange = HTTPExchangeRecord(
       routeID: route.id,
@@ -168,8 +162,7 @@ struct `HTTP capture schema tests` {
 
   @Test
   func `Deleting a route removes its exchanges and bodies`() async throws {
-    let temp = try TempDirectory()
-    let database = try database(temp)
+    let database = try TestDatabase.inMemory()
     let (mux, route) = route(name: "web", route: "web-0")
     let exchange = HTTPExchangeRecord(
       routeID: route.id,
@@ -229,8 +222,7 @@ struct `HTTP capture schema tests` {
 
   @Test
   func `Pruning exchanges also removes their bodies`() async throws {
-    let temp = try TempDirectory()
-    let database = try database(temp)
+    let database = try TestDatabase.inMemory()
     let (mux, route) = route(name: "web", route: "web-0")
     let exchanges = (0..<3)
       .map { index in

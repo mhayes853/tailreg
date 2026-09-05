@@ -1,4 +1,5 @@
 import Foundation
+import TailregTestSupport
 import Testing
 
 @testable import TailregCore
@@ -14,7 +15,7 @@ struct `Tailscale command failure tests` {
       binaryPath: "/usr/bin/tailscale",
       runner: runner,
       portProbe: StubPortProbe(listening: listening),
-      database: try openTailregDatabase(path: temp.path("tailreg.sqlite"), kind: .queue)
+      database: try TestDatabase.onDisk(in: temp)
     )
   }
 
@@ -36,7 +37,7 @@ struct `Tailscale command failure tests` {
     )
 
     await #expect(throws: TailscaleError.operatorPermissionDenied) {
-      try await makeBinder(runner, temp: temp).bind(localPort: 3000)
+      try await makeBinder(runner, temp: temp).bind(localPort: .fixed(3000))
     }
   }
 
@@ -47,7 +48,7 @@ struct `Tailscale command failure tests` {
     runner.stub(["serve", "--bg"], stderr: "Tailscale is stopped.", exitCode: 1)
 
     await #expect(throws: TailscaleError.daemonNotRunning(state: "Tailscale is stopped.")) {
-      try await makeBinder(runner, temp: temp).bind(localPort: 3000)
+      try await makeBinder(runner, temp: temp).bind(localPort: .fixed(3000))
     }
   }
 
@@ -64,7 +65,7 @@ struct `Tailscale command failure tests` {
         standardError: "something unexpected"
       )
     ) {
-      try await makeBinder(runner, temp: temp).bind(localPort: 3000)
+      try await makeBinder(runner, temp: temp).bind(localPort: .fixed(3000))
     }
   }
 

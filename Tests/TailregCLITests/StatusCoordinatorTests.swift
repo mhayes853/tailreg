@@ -1,6 +1,7 @@
 import Foundation
 import SQLiteData
 import TailregCore
+import TailregTestSupport
 import Testing
 import UUIDV7
 
@@ -304,8 +305,8 @@ struct `Status coordinator tests` {
         projectID: project.id,
         pid: Int(getpid()),
         processStartedAt: processStartTime(of: getpid()),
-        ingressPort: 39_428,
-        adminPort: 39_429,
+        ingressPort: .fixed(39_428),
+        adminPort: .fixed(39_429),
         exposure: exposure
       )
       try database.write { db in try MuxRunRecord.insert { runtime }.execute(db) }
@@ -367,7 +368,10 @@ struct `Status coordinator tests` {
     }
 
     @discardableResult
-    func insertBinding(localPort: Int, tailnetPort: Int = 443) throws -> TailscaleBindingRecord {
+    func insertBinding(
+      localPort: PortNumber,
+      tailnetPort: PortNumber = .fixed(443)
+    ) throws -> TailscaleBindingRecord {
       let binding = TailscaleBindingRecord(
         hostname: "demo.tail1234.ts.net",
         localPort: localPort,
@@ -400,14 +404,6 @@ struct `Status coordinator tests` {
 
     func cleanUp() {
       try? FileManager.default.removeItem(at: root)
-    }
-  }
-
-  private struct StubPortProbe: PortProbe {
-    let listening: Set<Int>
-
-    func isListening(host: String, port: PortNumber) async -> Bool {
-      listening.contains(port.intValue)
     }
   }
 }

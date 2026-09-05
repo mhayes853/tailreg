@@ -1,5 +1,6 @@
 import Foundation
 import SQLiteData
+import TailregTestSupport
 import Testing
 import UUIDV7
 
@@ -8,7 +9,9 @@ import UUIDV7
 @Suite(.timeLimit(.minutes(1)))
 struct `External process log monitor tests` {
   @Test
-  func `Discovers And Persists Redirected Standard Output And Error For A Listener Process`() async throws {
+  func `Discovers And Persists Redirected Standard Output And Error For A Listener Process`()
+    async throws
+  {
     let temp = try TempDirectory()
     let fixture = try LogWritingSocketProcess(in: temp.url)
     defer { fixture.stop() }
@@ -24,8 +27,8 @@ struct `External process log monitor tests` {
         == fixture.standardErrorURL.resolvingSymlinksInPath()
     )
 
-    let database = try openTailregDatabase(path: temp.path("tailreg.sqlite"), kind: .queue)
-    let bindingID = try await binding(into: database)
+    let database = try TestDatabase.onDisk(in: temp)
+    let bindingID = try await TailscaleBindingRecord.insertFixture(into: database)
     let monitor = ProcessLogMonitor(database: database, batchSize: 1)
     let task = Task { try await monitor.monitor(output, for: bindingID) }
     defer {
@@ -55,8 +58,8 @@ struct `External process log monitor tests` {
     let output = await (try await listenerProcess(for: fixture)).output()
     #expect(output.standardOutput.file?.identity == output.standardError.file?.identity)
 
-    let database = try openTailregDatabase(path: temp.path("tailreg.sqlite"), kind: .queue)
-    let bindingID = try await binding(into: database)
+    let database = try TestDatabase.onDisk(in: temp)
+    let bindingID = try await TailscaleBindingRecord.insertFixture(into: database)
     let task = Task {
       try await ProcessLogMonitor(database: database, batchSize: 1).monitor(output, for: bindingID)
     }
@@ -69,7 +72,9 @@ struct `External process log monitor tests` {
       try await database.read { db in
         try LogRecord.page(for: bindingID, limit: 10).fetchAll(db)
       }
-    } until: { $0.count == 2 }
+    } until: {
+      $0.count == 2
+    }
     #expect(records.map(\.message).sorted() == ["fixture stderr", "fixture stdout"])
     #expect(records.allSatisfy { $0.stream == .standardOutput })
   }
@@ -102,7 +107,9 @@ struct `External process log monitor tests` {
     #expect(output.standardError == .unavailable(.pipe))
   }
 
-  private func listenerProcess(for fixture: LogWritingSocketProcess) async throws -> ListeningProcess {
+  private func listenerProcess(for fixture: LogWritingSocketProcess) async throws
+    -> ListeningProcess
+  {
     try await listenerProcess(for: fixture.port, pid: fixture.pid)
   }
 
@@ -114,38 +121,11 @@ struct `External process log monitor tests` {
     return try #require(matches.first { $0.pid == pid })
   }
 
-  private func binding(into database: any DatabaseWriter) async throws -> UUIDV7 {
-    let record = TailscaleBindingRecord(
-      hostname: "node.example.ts.net",
-      localPort: 3000,
-      tailnetPort: 443,
-      proto: .https,
-      mountPath: "/",
-      status: .active,
-      createdAt: .now
-    )
-    try await database.write { db in
-      try TailscaleBindingRecord.insert { record }.execute(db)
-    }
-    return record.id
-  }
-
-  private func eventually<Value: Sendable>(
-    _ operation: @escaping @Sendable () async throws -> Value,
-    until predicate: @escaping @Sendable (Value) -> Bool
-  ) async throws -> Value {
-    for _ in 0..<100 {
-      let value = try await operation()
-      if predicate(value) { return value }
-      try await Task.sleep(for: .milliseconds(25))
-    }
-    return try await operation()
-  }
 }
 
-private extension ProcessOutputTarget {
-  var file: ProcessOutputFile? {
-    guard case let .regularFile(file) = self else { return nil }
+extension ProcessOutputTarget {
+  fileprivate var file: ProcessOutputFile? {
+    guard case .regularFile(let file) = self else { return nil }
     return file
   }
 }

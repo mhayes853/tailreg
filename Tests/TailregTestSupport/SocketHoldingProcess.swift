@@ -12,18 +12,18 @@ import TailregCore
 /// The parent binds and listens, hands the descriptor to the child, then closes its own copy,
 /// so the port is attributable to the child alone. That is what separates a locator that walks
 /// other processes from one that only ever inspects itself.
-final class SocketHoldingProcess {
-  enum Output {
+public final class SocketHoldingProcess {
+  public enum Output {
     case nullDevice
     case pipe
   }
 
-  let port: PortNumber
-  let pid: Int32
+  public let port: PortNumber
+  public let pid: Int32
   private let process: Process
   private let pipes: (standardOutput: Pipe, standardError: Pipe)?
 
-  init(output: Output = .nullDevice) throws {
+  public init(output: Output = .nullDevice) throws {
     let listener = try LoopbackListener()
     port = listener.port
 
@@ -55,7 +55,7 @@ final class SocketHoldingProcess {
     pid = process.processIdentifier
   }
 
-  func stop() {
+  public func stop() {
     // SIGKILL rather than `terminate()`: a leaked child would otherwise hold the test process
     // open for the whole of its sleep.
     kill(pid, SIGKILL)

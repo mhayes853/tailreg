@@ -7,17 +7,17 @@ import TailregCore
   import Darwin
 #endif
 
-final class LoopbackListener {
-  enum Address {
+public final class LoopbackListener {
+  public enum Address {
     case loopbackV4
     case loopbackV6
     case wildcardV4
   }
 
-  let port: PortNumber
-  let descriptor: Int32
+  public let port: PortNumber
+  public let descriptor: Int32
 
-  init(_ address: Address = .loopbackV4, port requested: PortNumber? = nil) throws {
+  public init(_ address: Address = .loopbackV4, port requested: PortNumber? = nil) throws {
     #if canImport(Glibc)
       let socketType = Int32(SOCK_STREAM.rawValue)
     #else
@@ -102,7 +102,7 @@ final class LoopbackListener {
     port = resolved
   }
 
-  func stop() {
+  public func stop() {
     posixClose(descriptor)
   }
 
@@ -120,7 +120,7 @@ final class LoopbackListener {
     return PortNumber(bigEndian: raw)
   }
 
-  enum Failure: Error { case socket, bind }
+  public enum Failure: Error { case socket, bind }
 }
 
 private func posixClose(_ descriptor: Int32) {
