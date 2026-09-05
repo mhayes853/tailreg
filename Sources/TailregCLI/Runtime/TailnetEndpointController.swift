@@ -30,7 +30,7 @@ struct TailnetEndpointController: TailnetEndpointRemoving {
     requestedPort: PortNumber? = nil
   ) async throws -> TailnetEndpoint {
     if exposure == .local {
-      return TailnetEndpoint(url: URL(string: "http://127.0.0.1:\(ingressPort)/")!, bindingID: nil)
+      return TailnetEndpoint(url: .muxIngress(port: ingressPort), bindingID: nil)
     }
 
     let binder = try makeBinder()
@@ -66,6 +66,16 @@ struct TailnetEndpointController: TailnetEndpointRemoving {
       searchPaths: searchPaths,
       databasePath: databasePath
     )
+  }
+}
+
+extension URL {
+  /// Where a project's MUX ingress answers on this machine.
+  ///
+  /// `up` returns it as the base URL of a `--local-only` runtime and `status` reports the same
+  /// address for one, so the two agree by construction rather than by both being written out.
+  static func muxIngress(port: PortNumber) -> URL {
+    URL(string: "http://127.0.0.1:\(port)/")!
   }
 }
 

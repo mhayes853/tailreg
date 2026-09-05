@@ -184,7 +184,7 @@ struct StatusCoordinator: Sendable {
   private func baseURL(for runtime: MuxRunRecord?, binding: TailscaleBindingRecord?) -> URL? {
     guard let runtime else { return nil }
     switch runtime.exposure {
-    case .local: return URL(string: "http://127.0.0.1:\(runtime.ingressPort)/")
+    case .local: return .muxIngress(port: runtime.ingressPort)
     case .tailnet: return binding?.url
     }
   }
@@ -266,11 +266,9 @@ struct StatusCoordinator: Sendable {
       case .unverifiable, nil: return .unverified
       }
     case .attached:
-      guard let upstream = route.flatMap({ URL(string: $0.upstreamURL) }),
-        let host = upstream.host,
-        let port = upstream.listenerPort
-      else { return .unverified }
-      return await portProbe.isListening(host: host, port: port) ? .running : .unreachable
+      guard let upstream = Self.upstream(of: route?.upstreamURL) else { return .unverified }
+      return await portProbe.isListening(host: upstream.host, port: upstream.port)
+        ? .running : .unreachable
     }
   }
 
@@ -413,11 +411,19 @@ struct StatusCoordinator: Sendable {
 
   // MARK: - Upstreams
 
+  /// A route's upstream, when it is one Tailreg could have published.
+  ///
+  /// Routes are stored as text, so a row that names something other than a loopback listener is
+  /// possible; there is nothing to probe or name in that case, and saying so is better than
+  /// probing an address the runtime would never have created.
+  private static func upstream(of upstreamURL: String?) -> LoopbackURL? {
+    upstreamURL.flatMap(URL.init(string:)).flatMap(LoopbackURL.init)
+  }
+
   private func authority(of route: RouteStatus?) -> String {
-    guard let upstream = route.flatMap({ URL(string: $0.upstreamURL) }),
-      let host = upstream.host,
-      let port = upstream.listenerPort
-    else { return route?.upstreamURL ?? "the upstream" }
-    return "\(host):\(port)"
+    guard let upstream = Self.upstream(of: route?.upstreamURL) else {
+      return route?.upstreamURL ?? "the upstream"
+    }
+    return "\(upstream.host):\(upstream.port)"
   }
 }

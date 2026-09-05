@@ -1,7 +1,8 @@
 import http from "node:http";
 
-// Stands in for an application that was already listening when the project came up, so the
-// project's applications are attached and nothing supervises them.
+// One trivial upstream, shared by every CLI end-to-end fixture. Nothing these suites test is
+// about the application: `up`, `down` and `status` only need something that listens on a port
+// and answers, whether Tailreg launched it or found it already running.
 const port = Number(process.env.PORT);
 
 http

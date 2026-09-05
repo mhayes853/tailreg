@@ -93,10 +93,10 @@ struct DownCoordinator: Sendable {
     // Everything that changes a MUX, a route, a binding or a process is serialized here, and the
     // runtime is left in its final state before the lock is released. Nothing else is guaranteed
     // to come along afterwards: a supervisor blocked on this lock may time out and give up.
-    let lock = FileLock(path: databasePath + ".runtime.lock")
-    let result = try await lock.withLock(.exclusive) {
-      try await reconcile(request, project: project, database: database, terminator: terminator)
-    }
+    let result = try await FileLock.runtime(forDatabaseAt: databasePath)
+      .withLock(.exclusive) {
+        try await reconcile(request, project: project, database: database, terminator: terminator)
+      }
     await report(result)
     return result
   }
@@ -122,12 +122,9 @@ struct DownCoordinator: Sendable {
         .select { $0.name }
         .fetchAll(database)
     }
-    let selected = try select(
-      request.applicationNames,
-      from: live,
-      project: project,
-      known: Set(known)
-    )
+    // `down web web` names one application, and an application has one outcome.
+    let requested = request.applicationNames.withoutRepeats
+    let selected = try select(requested, from: live, project: project, known: Set(known))
 
     // No MUX means no routes to clear; the records are still ended so the project reads as down.
     let controller = muxController(database: database, terminator: terminator)
@@ -140,14 +137,14 @@ struct DownCoordinator: Sendable {
       outcomes.append((run.name, outcome))
     }
     let names = Set(selected.map(\.name))
-    for name in request.applicationNames where !names.contains(name) {
+    for name in requested where !names.contains(name) {
       outcomes.append((name, .alreadyDown))
     }
 
     var teardown: ProjectRuntimeTeardown.Result?
     if let runtime, let admin {
       teardown = await ProjectRuntimeTeardown(
-        liveRouteCount: { try await admin.routes().count },
+        admin: admin,
         muxController: controller,
         endpointController: TailnetEndpointController(
           databasePath: databasePath,
@@ -302,6 +299,14 @@ struct DownCoordinator: Sendable {
     if case .failed(let reason) = result.runtime {
       await console.error("the project runtime was not fully removed: \(reason)")
     }
+  }
+}
+
+extension [String] {
+  /// The elements in the order given, with later repeats dropped.
+  fileprivate var withoutRepeats: [String] {
+    var seen: Set<String> = []
+    return filter { seen.insert($0).inserted }
   }
 }
 

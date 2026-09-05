@@ -7,7 +7,9 @@ import TailregCore
   import Darwin
 #endif
 
-public final class LoopbackListener {
+/// A bound, listening socket that never accepts. `Sendable` because everything it holds is
+/// immutable: a test can hand one to a task that binds a port on a timer.
+public final class LoopbackListener: Sendable {
   public enum Address {
     case loopbackV4
     case loopbackV6

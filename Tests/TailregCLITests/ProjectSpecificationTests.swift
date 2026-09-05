@@ -1,5 +1,7 @@
 import Foundation
 import TailregCLI
+import TailregCore
+import TailregTestSupport
 import Testing
 
 @Suite
@@ -95,21 +97,105 @@ struct `Project specification tests` {
       try ProjectSpecification.load(from: fixture.file)
     }
   }
+
+  /// An unexposed application has no route to point anywhere, so it needs no port either.
+  @Test
+  func `An unexposed application does not need a port`() throws {
+    let fixture = try TOMLFixture(
+      """
+      [apps.worker]
+      command = ["swift", "run", "Worker"]
+      expose = false
+      """
+    )
+
+    let specification = try ProjectSpecification.load(from: fixture.file)
+
+    let worker = try #require(specification.applications.first)
+    #expect(worker.isExposed == false)
+    #expect(worker.exposure == nil)
+    #expect(worker.listenerPort == nil)
+    #expect(worker.ownership == .managed)
+  }
+
+  /// The other half of the same rule: a route has to name an upstream, and a command that never
+  /// says where it listens cannot supply one.
+  @Test
+  func `An exposed command without a port is rejected`() throws {
+    let fixture = try TOMLFixture(
+      """
+      [apps.web]
+      route = "web"
+      command = ["npm", "run", "dev"]
+      """
+    )
+
+    #expect(throws: ProjectSpecificationError.missingPort("web")) {
+      try ProjectSpecification.load(from: fixture.file)
+    }
+  }
+
+  @Test
+  func `An attached application takes its port from its URL`() throws {
+    let fixture = try TOMLFixture(
+      """
+      [apps.docs]
+      route = "docs"
+      attach = "http://localhost:4321"
+      """
+    )
+
+    let docs = try #require(try ProjectSpecification.load(from: fixture.file).applications.first)
+
+    #expect(docs.listenerPort == PortNumber(4321))
+    #expect(docs.ownership == .attached)
+    #expect(docs.command == nil)
+    #expect(docs.exposure?.upstream.description == "http://localhost:4321")
+  }
+
+  /// Tailreg proxies to this machine only. Anything else would publish a third party's server on
+  /// the user's tailnet.
+  @Test
+  func `Rejects an attach URL that is not loopback`() throws {
+    let fixture = try TOMLFixture(
+      """
+      [apps.docs]
+      route = "docs"
+      attach = "http://example.com:8080"
+      """
+    )
+
+    #expect(throws: ProjectSpecificationError.invalidAttachURL("docs")) {
+      try ProjectSpecification.load(from: fixture.file)
+    }
+  }
+
+  /// The same mistake `up --attach --port` refuses: a port beside an attach URL can only
+  /// disagree with it, and would have readiness judged on a port the route never uses.
+  @Test
+  func `Rejects a port beside an attach URL`() throws {
+    let fixture = try TOMLFixture(
+      """
+      [apps.docs]
+      route = "docs"
+      port = 4321
+      attach = "http://127.0.0.1:8080"
+      """
+    )
+
+    #expect(throws: ProjectSpecificationError.portWithAttach("docs")) {
+      try ProjectSpecification.load(from: fixture.file)
+    }
+  }
 }
 
+/// A `tailreg.toml` in a directory of its own, removed with the fixture.
 private final class TOMLFixture {
-  let directory: URL
+  let directory: TempDirectory
   let file: URL
 
   init(_ contents: String) throws {
-    directory = FileManager.default.temporaryDirectory
-      .appendingPathComponent("tailreg-cli-tests-\(UUID().uuidString)", isDirectory: true)
-    file = directory.appendingPathComponent("tailreg.toml")
-    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-    try Data(contents.utf8).write(to: file)
-  }
-
-  deinit {
-    try? FileManager.default.removeItem(at: directory)
+    directory = try TempDirectory()
+    file = URL(fileURLWithPath: try directory.makeFile("tailreg.toml", contents: contents))
   }
 }

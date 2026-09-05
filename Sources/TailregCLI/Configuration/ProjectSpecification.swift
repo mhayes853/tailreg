@@ -61,7 +61,7 @@ public struct ProjectSpecification: Equatable, Sendable {
   private func validate() throws {
     guard !applications.isEmpty else { throw ProjectSpecificationError.noApplications }
     let names = Set(applications.map(\.name))
-    let routes = applications.compactMap(\.route)
+    let routes = applications.compactMap { $0.exposure?.route }
     guard Set(routes).count == routes.count else { throw ProjectSpecificationError.duplicateRoute }
     for application in applications {
       for dependency in application.dependencies where !names.contains(dependency) {
@@ -103,46 +103,92 @@ public struct ProjectSpecification: Equatable, Sendable {
   }
 }
 
+/// One application in a project's desired state.
+///
+/// The combinations that used to be validated are now unrepresentable: an application has
+/// exactly one source of traffic, and an exposed one has an upstream derived from that source
+/// rather than an optional that every consumer had to re-check.
 public struct ApplicationSpecification: Equatable, Sendable {
-  public let name: String
-  public let route: MuxRouteName?
-  public let port: PortNumber?
-  public let attachURL: URL?
-  public let command: ProcessCommand?
-  public let dependencies: [String]
-  public let isExposed: Bool
-  public let pathMode: MuxRoutePathMode
+  /// Where an application's traffic comes from.
+  public enum Source: Equatable, Sendable {
+    /// A command Tailreg launches and supervises, listening on `port` if it listens at all.
+    case command(ProcessCommand, port: PortNumber?)
+    /// Someone else's process, reachable at a loopback URL. Never signalled.
+    case attached(LoopbackURL)
 
-  public var listenerPort: PortNumber? { port ?? attachURL?.listenerPort }
-
-  var upstreamURL: URL {
-    guard let upstream = attachURL ?? port.flatMap({ URL(string: "http://127.0.0.1:\($0)") }) else {
-      fatalError("An exposed application must have an upstream after validation")
+    /// What a route for this source would proxy to, if there is anything to proxy to.
+    fileprivate var upstream: LoopbackURL? {
+      switch self {
+      case .command(_, let port): port.map(LoopbackURL.init(port:))
+      case .attached(let url): url
+      }
     }
-    return upstream
+  }
+
+  /// How an exposed application is published. Nil is `expose = false`.
+  public struct Exposure: Equatable, Sendable {
+    /// The stable route name, or nil to let the MUX allocate one.
+    public let route: MuxRouteName?
+    public let pathMode: MuxRoutePathMode
+    public let upstream: LoopbackURL
+  }
+
+  public let name: String
+  public let source: Source
+  public let exposure: Exposure?
+  public let dependencies: [String]
+
+  public var command: ProcessCommand? {
+    guard case .command(let command, _) = source else { return nil }
+    return command
+  }
+
+  /// The port readiness is judged on: the one a launched command was told to listen on, or the
+  /// one an attached upstream already answers on.
+  public var listenerPort: PortNumber? {
+    switch source {
+    case .command(_, let port): port
+    case .attached(let url): url.port
+    }
+  }
+
+  public var isExposed: Bool { exposure != nil }
+
+  public var ownership: ApplicationOwnership {
+    switch source {
+    case .command: .managed
+    case .attached: .attached
+    }
   }
 
   public init(
     name: String,
+    source: Source,
     route: MuxRouteName? = nil,
-    port: PortNumber? = nil,
-    attachURL: URL? = nil,
-    command: ProcessCommand? = nil,
-    dependencies: [String] = [],
+    pathMode: MuxRoutePathMode = .stripRoutePrefix,
     isExposed: Bool = true,
-    pathMode: MuxRoutePathMode = .stripRoutePrefix
+    dependencies: [String] = []
   ) throws {
+    guard !name.isEmpty else { throw ProjectSpecificationError.invalidApplicationName }
     self.name = name
-    self.route = route
-    self.port = port
-    self.attachURL = attachURL
-    self.command = command
+    self.source = source
     self.dependencies = dependencies
-    self.isExposed = isExposed
-    self.pathMode = pathMode
-    try validate()
+    guard isExposed else {
+      self.exposure = nil
+      return
+    }
+    // The one thing a source cannot supply on its own: a command that never says where it
+    // listens has nothing for a route to point at.
+    guard let upstream = source.upstream else {
+      throw ProjectSpecificationError.missingPort(name)
+    }
+    self.exposure = Exposure(route: route, pathMode: pathMode, upstream: upstream)
   }
 
+  /// Reads one `[apps.NAME]` table.
+  ///
+  /// Every error here is about the raw fields rather than the resulting application: the shape
+  /// the type guarantees is exactly what the file may fail to describe.
   fileprivate init(
     name: String,
     raw: ProjectSpecification.RawApplication,
@@ -163,8 +209,26 @@ public struct ApplicationSpecification: Equatable, Sendable {
         environment: raw.environment ?? [:]
       )
     }
+    let source: Source
+    switch (command, raw.attach) {
+    case (let command?, nil):
+      source = .command(command, port: raw.port)
+    case (nil, let attach?):
+      guard let url = URL(string: attach), let loopback = LoopbackURL(url) else {
+        throw ProjectSpecificationError.invalidAttachURL(name)
+      }
+      // The URL already says where the upstream listens; a second port could only disagree, and
+      // whichever one won, readiness would be judged on a port unrelated to the route.
+      guard raw.port == nil else { throw ProjectSpecificationError.portWithAttach(name) }
+      source = .attached(loopback)
+    case (nil, nil):
+      throw ProjectSpecificationError.missingCommandOrAttach(name)
+    case (.some, .some):
+      throw ProjectSpecificationError.commandAndAttach(name)
+    }
     try self.init(
       name: name,
+      source: source,
       // Parsed here rather than in `RawApplication`, where the name of the table the route was
       // written in — and so the subject of the error a bad one has to report — is out of scope.
       route: try raw.route.map { route in
@@ -173,37 +237,10 @@ public struct ApplicationSpecification: Equatable, Sendable {
         }
         return route
       },
-      port: raw.port,
-      attachURL: raw.attach.flatMap(URL.init(string:)),
-      command: command,
-      dependencies: raw.dependsOn ?? [],
+      pathMode: raw.preserveRoutePrefix == true ? .preserveRoutePrefix : .stripRoutePrefix,
       isExposed: raw.expose ?? true,
-      pathMode: raw.preserveRoutePrefix == true ? .preserveRoutePrefix : .stripRoutePrefix
+      dependencies: raw.dependsOn ?? []
     )
-    if raw.attach != nil, attachURL == nil {
-      throw ProjectSpecificationError.invalidAttachURL(name)
-    }
-  }
-
-  private func validate() throws {
-    guard !name.isEmpty else { throw ProjectSpecificationError.invalidApplicationName }
-    guard command != nil || attachURL != nil else {
-      throw ProjectSpecificationError.missingCommandOrAttach(name)
-    }
-    guard command == nil || attachURL == nil else {
-      throw ProjectSpecificationError.commandAndAttach(name)
-    }
-    if let attachURL {
-      guard attachURL.scheme == "http" || attachURL.scheme == "https",
-        let host = attachURL.host,
-        ["127.0.0.1", "localhost", "::1"].contains(host)
-      else {
-        throw ProjectSpecificationError.invalidAttachURL(name)
-      }
-    }
-    if isExposed, listenerPort == nil {
-      throw ProjectSpecificationError.missingPort(name)
-    }
   }
 }
 
@@ -216,6 +253,7 @@ public enum ProjectSpecificationError: Error, Equatable, CustomStringConvertible
   case commandAndAttach(String)
   case missingPort(String)
   case invalidAttachURL(String)
+  case portWithAttach(String)
   case invalidRoute(application: String, route: String)
   case unknownApplication(String)
   case unknownDependency(application: String, dependency: String)
@@ -233,6 +271,7 @@ public enum ProjectSpecificationError: Error, Equatable, CustomStringConvertible
       "application '\(app)' cannot define both command and attach"
     case .missingPort(let app): "exposed application '\(app)' needs a port"
     case .invalidAttachURL(let app): "application '\(app)' has a non-loopback attach URL"
+    case .portWithAttach(let app): "application '\(app)' attaches to a URL; port has no effect"
     case .invalidRoute(let app, let route): "application '\(app)' has invalid route '\(route)'"
     case .unknownApplication(let app): "unknown application '\(app)'"
     case .unknownDependency(let app, let dependency):

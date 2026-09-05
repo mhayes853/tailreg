@@ -22,33 +22,33 @@ struct MuxProcessController: Sendable {
   func ensureRunning(for project: ProjectRecord, exposure: ProjectExposure) async throws
     -> (MuxRunRecord, Bool)
   {
-    let lock = FileLock(path: databasePath + ".runtime.lock")
-    return try await lock.withLock(.exclusive) {
-      if var existing = try await liveRun(for: project.id) {
-        let client = MuxAdminClient(port: existing.adminPort)
-        if existing.hasMatchingProcess, await client.isReady(as: project.muxID) {
-          // Exposure only ever widens. A local runtime that is now being bound to the tailnet is
-          // recorded as such, but a tailnet runtime asked for locally stays tailnet: its binding
-          // still exists and still serves, and forgetting it here is how it would leak.
-          if existing.exposure == .local, exposure == .tailnet {
-            try await setExposure(.tailnet, of: existing.id)
-            existing.exposure = .tailnet
+    return try await FileLock.runtime(forDatabaseAt: databasePath)
+      .withLock(.exclusive) {
+        if var existing = try await liveRun(for: project.id) {
+          let client = MuxAdminClient(port: existing.adminPort)
+          if existing.hasMatchingProcess, await client.isReady(as: project.muxID) {
+            // Exposure only ever widens. A local runtime that is now being bound to the tailnet is
+            // recorded as such, but a tailnet runtime asked for locally stays tailnet: its binding
+            // still exists and still serves, and forgetting it here is how it would leak.
+            if existing.exposure == .local, exposure == .tailnet {
+              try await setExposure(.tailnet, of: existing.id)
+              existing.exposure = .tailnet
+            }
+            return (existing, false)
           }
-          return (existing, false)
+          try await end(existing.id)
         }
-        try await end(existing.id)
-      }
 
-      var lastFailure: any Error = MuxRuntimeError.noLocalPorts
-      for attempt in 0..<Self.launchAttempts {
-        do {
-          return (try await launch(project, exposure: exposure, attempt: attempt), true)
-        } catch let failure as MuxRuntimeError where failure.isWorthRetrying {
-          lastFailure = failure
+        var lastFailure: any Error = MuxRuntimeError.noLocalPorts
+        for attempt in 0..<Self.launchAttempts {
+          do {
+            return (try await launch(project, exposure: exposure, attempt: attempt), true)
+          } catch let failure as MuxRuntimeError where failure.isWorthRetrying {
+            lastFailure = failure
+          }
         }
+        throw lastFailure
       }
-      throw lastFailure
-    }
   }
 
   /// The number of port ranges tried before giving up.

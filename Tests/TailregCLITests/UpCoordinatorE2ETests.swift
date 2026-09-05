@@ -11,35 +11,17 @@ import Testing
 struct `Up coordinator E2E tests` {
   @Test
   func `Brings up a configured frontend and API through one project MUX`() async throws {
-    let packageRoot = URL(fileURLWithPath: #filePath)
-      .deletingLastPathComponent()
-      .deletingLastPathComponent()
-      .deletingLastPathComponent()
-    let fixture = packageRoot.appendingPathComponent("Tests/Fixtures/FullStack")
-    let executable = builtTailregExecutable()
-    #expect(FileManager.default.isExecutableFile(atPath: executable.path))
-
-    let stateDirectory = FileManager.default.temporaryDirectory
-      .appendingPathComponent("tailreg-cli-e2e-\(UUID().uuidString)")
-    try FileManager.default.createDirectory(at: stateDirectory, withIntermediateDirectories: true)
-    defer { try? FileManager.default.removeItem(at: stateDirectory) }
+    // The fixture servers exit on their own, so the supervisor this drives finishes rather than
+    // running for the length of the suite.
+    let project = try E2EProject(
+      fixture: "FullStack",
+      environment: ["TAILREG_E2E_AUTO_EXIT_MS": "2500"]
+    )
+    defer { project.cleanUp() }
+    #expect(FileManager.default.isExecutableFile(atPath: project.executable.path))
 
     let observation = ReadyObservation()
-    var environment = ProcessInfo.processInfo.environment
-    environment["TAILREG_E2E_AUTO_EXIT_MS"] = "2500"
-    environment["TAILREG_STARTUP_TIMEOUT_MS"] = "15000"
-    let coordinator = UpCoordinator(
-      databasePath: stateDirectory.appendingPathComponent("tailreg.sqlite").path,
-      executableURL: executable,
-      environment: environment,
-      currentDirectory: fixture
-    )
-
-    let result = try await coordinator.run(
-      UpRequest(projectPath: fixture.path, localOnly: true)
-    ) { ready in
-      await observation.probe(ready)
-    }
+    let result = try await project.up { ready in await observation.probe(ready) }
 
     #expect(result.projectName == "storefront")
     #expect(Set(result.applications.compactMap { $0.route?.rawValue }) == ["api", "web"])

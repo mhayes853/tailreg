@@ -51,6 +51,12 @@ tailreg up --app docs --route docs --port 4321 -- npm run dev
 tailreg up --app api --route api --attach http://127.0.0.1:8080
 ```
 
+An application defines either one command or one `attach` URL. An attach URL is
+always `http` or `https` on this machine — `127.0.0.1`, `localhost`, or `::1` —
+because Tailreg proxies to local processes rather than republishing somebody
+else's server. It also carries its own port, so `--port` is only for a command
+and is refused alongside `--attach`.
+
 Use `--local-only` to exercise the project MUX without changing Tailscale.
 Tailreg discovers the nearest `tailreg.toml`, creates or reuses one project MUX,
 and attaches every exposed application as a route on that MUX.

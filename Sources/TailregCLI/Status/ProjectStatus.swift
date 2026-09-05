@@ -105,18 +105,6 @@ struct StatusProblem: Codable, Equatable, Sendable {
     case notConfigured = "not-configured"
     case orphanedRoute = "orphaned-route"
     case unheldBinding = "unheld-binding"
-
-    var label: String {
-      switch self {
-      case .missing: "missing"
-      case .unreachable: "unreachable"
-      case .staleProcess: "stale process"
-      case .notListening: "not listening"
-      case .notConfigured: "not configured"
-      case .orphanedRoute: "orphaned route"
-      case .unheldBinding: "unheld binding"
-      }
-    }
   }
 
   var subject: String

@@ -121,3 +121,21 @@ struct ProjectRuntimeTeardown: Sendable {
     return outcomes
   }
 }
+
+extension ProjectRuntimeTeardown {
+  /// Teardown driven by a live MUX's admin API, which is how both `up` and `down` reach it.
+  ///
+  /// In an extension so the memberwise initializer survives: tests drive the route count
+  /// directly, without a MUX to ask.
+  init(
+    admin: MuxAdminClient,
+    muxController: MuxProcessController,
+    endpointController: any TailnetEndpointRemoving
+  ) {
+    self.init(
+      liveRouteCount: { try await admin.routes().count },
+      muxController: muxController,
+      endpointController: endpointController
+    )
+  }
+}

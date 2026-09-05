@@ -10,14 +10,27 @@ import UUIDV7
   import Glibc
 #endif
 
+/// What one `up` invocation was asked to bring up.
+///
+/// The flag combinations the command line allows are resolved into these cases once, at the
+/// boundary, so nothing downstream has to ask again whether a command and an attach URL were
+/// both given, or a port was set for something that does not listen on one.
 struct UpRequest: Sendable {
+  enum Selection: Sendable {
+    /// Configured applications by name, with their dependencies; empty means all of them.
+    case configured([String])
+    /// One application named on the command line, which `tailreg.toml` need not describe.
+    case adHoc(name: String, route: MuxRouteName?, source: AdHocSource)
+  }
+
+  enum AdHocSource: Sendable {
+    /// The argv after `--`. Its working directory is the project root.
+    case command([String], port: PortNumber?)
+    case attached(LoopbackURL)
+  }
+
   var projectPath: String?
-  var applicationNames: [String] = []
-  var adHocApplication: String?
-  var route: MuxRouteName?
-  var port: PortNumber?
-  var attachURL: URL?
-  var command: [String] = []
+  var selection: Selection
   var tailnetPort: PortNumber?
   var localOnly = false
 }
@@ -110,7 +123,7 @@ struct UpCoordinator: Sendable {
 
     let admin = MuxAdminClient(port: runtime.adminPort)
     let teardown = ProjectRuntimeTeardown(
-      liveRouteCount: { try await admin.routes().count },
+      admin: admin,
       muxController: muxController,
       endpointController: endpointController
     )
@@ -225,33 +238,52 @@ struct UpCoordinator: Sendable {
   private func applicationLevels(for request: UpRequest, project: ResolvedProject) throws
     -> [[ApplicationSpecification]]
   {
-    if let name = request.adHocApplication {
-      let command: ProcessCommand? =
-        request.command.isEmpty
-        ? nil
-        : {
-          ProcessCommand(
-            executable: request.command[0],
-            arguments: Array(request.command.dropFirst()),
-            workingDirectory: project.root
-          )
-        }()
+    switch request.selection {
+    case .adHoc(let name, let route, let source):
       let application = try ApplicationSpecification(
         name: name,
-        route: request.route,
-        port: request.port,
-        attachURL: request.attachURL,
-        command: command
+        source: try applicationSource(source, name: name, projectRoot: project.root),
+        route: route
       )
       return [[application]]
+    case .configured(let names):
+      guard let specification = project.specification else {
+        throw UpError.configurationRequired
+      }
+      return try specification.selected(names)
     }
-    guard request.command.isEmpty else { throw UpError.commandRequiresApplication }
-    guard let specification = project.specification else {
-      throw UpError.configurationRequired
-    }
-    return try specification.selected(request.applicationNames)
   }
 
+  /// An ad hoc application's source, with the argv turned into a command rooted at the project.
+  private func applicationSource(
+    _ source: UpRequest.AdHocSource,
+    name: String,
+    projectRoot: URL
+  ) throws -> ApplicationSpecification.Source {
+    switch source {
+    case .attached(let url):
+      return .attached(url)
+    case .command(let arguments, let port):
+      guard let executable = arguments.first else {
+        throw ProjectSpecificationError.emptyCommand(name)
+      }
+      return .command(
+        ProcessCommand(
+          executable: executable,
+          arguments: Array(arguments.dropFirst()),
+          workingDirectory: projectRoot
+        ),
+        port: port
+      )
+    }
+  }
+
+  /// Brings one application up: launch it if it is ours, wait for it, record it, publish it.
+  ///
+  /// The order is the invariant. Nothing is launched onto a port that already answers, nothing
+  /// is recorded before the listener is confirmed to be ours, and no route is published before
+  /// the run that owns it exists. Anything that fails after the launch unwinds what this call
+  /// created and leaves the rest of the invocation to roll itself back.
   private func start(
     _ specification: ApplicationSpecification,
     endpoint: TailnetEndpoint,
@@ -260,75 +292,25 @@ struct UpCoordinator: Sendable {
     database: any DatabaseWriter,
     projectID: UUIDV7
   ) async throws -> RunningApplication {
-    let baseURL = endpoint.url
-    var process: LaunchedProcess?
-    var outputTasks: [Task<Void, Never>] = []
-    if var command = specification.command {
-      // A port that already answers would pass the readiness probe on its first tick, and the
-      // route would be published to whatever is there rather than to the process about to start.
-      if let port = specification.listenerPort {
-        try await requireFree(port: port, application: specification.name)
-      }
-      command.environment = environment.merging(command.environment) { _, configured in configured }
-      command.environment["TAILREG_PROJECT_URL"] = baseURL.absoluteString
-      if let route = specification.route {
-        command.environment["TAILREG_APP_PATH"] = "/\(route)/"
-      }
-      if let port = specification.port {
-        command.environment["TAILREG_PORT"] = port.description
-      }
-      let supervisedCommand = ProcessCommand(
-        executable: executableURL.path,
-        arguments: [SupervisedCommand.marker, command.executable] + command.arguments,
-        workingDirectory: command.workingDirectory,
-        environment: command.environment
-      )
-      let launched = try SystemProcessLauncher().launch(supervisedCommand)
-      process = launched
-      outputTasks = outputTasksFor(launched, name: specification.name)
-    }
-
+    let launched = try await launch(specification, endpoint: endpoint)
     do {
-      if let port = specification.listenerPort {
-        try await waitForListener(port: port, process: process, application: specification.name)
-        // The pre-launch check races with anything else that wants the port. The listener that
-        // finally answered has to be the process this invocation started.
-        if let process {
-          try await requireOwnership(of: port, by: process, application: specification.name)
-        }
-      }
-
-      // Recorded before the route is published: a run without a route can be reconciled later,
-      // whereas a published route with no owning run has nothing to identify who may remove it.
-      let appRun = AppRunRecord(
-        projectID: projectID,
-        name: specification.name,
-        ownership: process == nil ? .attached : .managed,
-        bindingID: endpoint.bindingID,
-        pid: process.map { Int($0.pid) },
-        processGroupID: process.flatMap { ProcessGroupID(getpgid($0.pid)) }
-          .map { Int($0.rawValue) },
-        processStartedAt: process.flatMap { RecordedProcess(observing: $0.pid)?.startedAt }
+      try await waitUntilReady(specification, process: launched?.process)
+      let appRun = try await record(
+        specification,
+        process: launched?.process,
+        endpoint: endpoint,
+        database: database,
+        projectID: projectID
       )
-      do {
-        try await database.write { database in
-          try AppRunRecord.insert { appRun }.execute(database)
-        }
-      } catch let error as DatabaseError
-        where error.extendedResultCode == .SQLITE_CONSTRAINT_UNIQUE
-      {
-        throw UpError.alreadyRunning(specification.name)
-      }
-
       do {
         var running = try await publish(
           specification,
           run: appRun,
-          process: process,
+          process: launched?.process,
           admin: admin,
           database: database
         )
-        running.outputTasks = outputTasks
+        running.outputTasks = launched?.outputTasks ?? []
         return running
       } catch {
         // The run was recorded but never published. An attached run has no process for
@@ -338,10 +320,96 @@ struct UpCoordinator: Sendable {
         throw error
       }
     } catch {
-      if let process { await terminator.stopProcessGroup(of: process) }
-      for task in outputTasks { task.cancel() }
+      if let launched {
+        await terminator.stopProcessGroup(of: launched.process)
+        for task in launched.outputTasks { task.cancel() }
+      }
       throw error
     }
+  }
+
+  /// Launches a managed application's command, or nothing at all for an attached one.
+  ///
+  /// The command runs through `_exec` so that it leads its own process group, and it is told
+  /// where the project and its own route are reachable, which is what lets a frontend address a
+  /// sibling API through the MUX rather than through a port the user had to hardcode.
+  private func launch(
+    _ specification: ApplicationSpecification,
+    endpoint: TailnetEndpoint
+  ) async throws -> LaunchedApplication? {
+    guard var command = specification.command else { return nil }
+    // A port that already answers would pass the readiness probe on its first tick, and the
+    // route would be published to whatever is there rather than to the process about to start.
+    if let port = specification.listenerPort {
+      try await requireFree(port: port, application: specification.name)
+    }
+    command.environment = environment.merging(command.environment) { _, configured in configured }
+    command.environment["TAILREG_PROJECT_URL"] = endpoint.url.absoluteString
+    if let route = specification.exposure?.route {
+      command.environment["TAILREG_APP_PATH"] = "/\(route)/"
+    }
+    if let port = specification.listenerPort {
+      command.environment["TAILREG_PORT"] = port.description
+    }
+    let supervisedCommand = ProcessCommand(
+      executable: executableURL.path,
+      arguments: [SupervisedCommand.marker, command.executable] + command.arguments,
+      workingDirectory: command.workingDirectory,
+      environment: command.environment
+    )
+    let process = try SystemProcessLauncher().launch(supervisedCommand)
+    return LaunchedApplication(
+      process: process,
+      outputTasks: outputTasksFor(process, name: specification.name)
+    )
+  }
+
+  /// Waits for the application's declared port, and for the answer to have come from it.
+  private func waitUntilReady(
+    _ specification: ApplicationSpecification,
+    process: LaunchedProcess?
+  ) async throws {
+    guard let port = specification.listenerPort else { return }
+    try await waitForListener(port: port, process: process, application: specification.name)
+    // The pre-launch check races with anything else that wants the port. The listener that
+    // finally answered has to be the process this invocation started.
+    if let process {
+      try await requireOwnership(of: port, by: process, application: specification.name)
+    }
+  }
+
+  /// Records the run before the route is published.
+  ///
+  /// A run without a route can be reconciled later, whereas a published route with no owning run
+  /// has nothing to identify who may remove it. The unique index on live runs is what makes a
+  /// second `up` of the same application a reported conflict rather than two supervisors.
+  private func record(
+    _ specification: ApplicationSpecification,
+    process: LaunchedProcess?,
+    endpoint: TailnetEndpoint,
+    database: any DatabaseWriter,
+    projectID: UUIDV7
+  ) async throws -> AppRunRecord {
+    let appRun = AppRunRecord(
+      projectID: projectID,
+      name: specification.name,
+      ownership: specification.ownership,
+      bindingID: endpoint.bindingID,
+      pid: process.map { Int($0.pid) },
+      processGroupID: process.flatMap { ProcessGroupID(getpgid($0.pid)) }
+        .map { Int($0.rawValue) },
+      processStartedAt: process.flatMap { RecordedProcess(observing: $0.pid)?.startedAt }
+    )
+    do {
+      try await database.write { database in
+        try AppRunRecord.insert { appRun }.execute(database)
+      }
+    } catch let error as DatabaseError
+      where error.extendedResultCode == .SQLITE_CONSTRAINT_UNIQUE
+    {
+      throw UpError.alreadyRunning(specification.name)
+    }
+    return appRun
   }
 
   /// Publishes a recorded run's route, if it has one.
@@ -357,10 +425,9 @@ struct UpCoordinator: Sendable {
   ) async throws -> RunningApplication {
     let route: MuxRouteResponse?
     let previousRoute: MuxRouteResponse?
-    if specification.isExposed {
-      let upstream = specification.upstreamURL
+    if let exposure = specification.exposure {
       let existing: MuxRouteResponse?
-      if let requestedRoute = specification.route {
+      if let requestedRoute = exposure.route {
         existing = try await admin.routes().first { $0.route == requestedRoute }
       } else {
         existing = nil
@@ -368,17 +435,17 @@ struct UpCoordinator: Sendable {
       if let existing {
         route = try await admin.update(
           route: existing.route,
-          upstream: upstream,
-          pathMode: specification.pathMode
+          upstream: exposure.upstream.url,
+          pathMode: exposure.pathMode
         )
         previousRoute = existing
       } else {
         route = try await admin.register(
           MuxRouteRegistrationRequest(
             name: specification.name,
-            route: specification.route,
-            upstreamURL: upstream.absoluteString,
-            pathMode: specification.pathMode
+            route: exposure.route,
+            upstreamURL: exposure.upstream.description,
+            pathMode: exposure.pathMode
           )
         )
         previousRoute = nil
@@ -535,11 +602,11 @@ struct UpCoordinator: Sendable {
     _ teardown: ProjectRuntimeTeardown,
     runtime: MuxRunRecord
   ) async {
-    let lock = FileLock(path: databasePath + ".runtime.lock")
     do {
-      let result = try await lock.withLock(.exclusive) {
-        await teardown.stopIfUnused(runtime)
-      }
+      let result = try await FileLock.runtime(forDatabaseAt: databasePath)
+        .withLock(.exclusive) {
+          await teardown.stopIfUnused(runtime)
+        }
       for binding in result.bindings { await console.report(binding) }
       if case .failed(let reason) = result.runtime {
         await console.error("the project runtime was not fully removed: \(reason)")
@@ -559,6 +626,12 @@ struct UpCoordinator: Sendable {
       }
     }
   }
+}
+
+/// A managed application's process and the tasks draining its output.
+private struct LaunchedApplication: Sendable {
+  let process: LaunchedProcess
+  let outputTasks: [Task<Void, Never>]
 }
 
 private struct RunningApplication: Sendable {
@@ -599,7 +672,6 @@ private final class SignalSupervisor: @unchecked Sendable {
 
 enum UpError: Error, CustomStringConvertible, Sendable {
   case configurationRequired
-  case commandRequiresApplication
   case alreadyRunning(String)
   case exitedBeforeReady(String)
   case readinessTimedOut(application: String, port: PortNumber)
@@ -613,7 +685,6 @@ enum UpError: Error, CustomStringConvertible, Sendable {
     case .portOwnedElsewhere(let app, let port, let owner):
       "application '\(app)' did not bind port \(port); it is held\(Self.describe(owner))"
     case .configurationRequired: "no tailreg.toml was found for this project"
-    case .commandRequiresApplication: "an ad hoc command requires --app"
     case .alreadyRunning(let app): "application '\(app)' is already running in this project"
     case .exitedBeforeReady(let app): "application '\(app)' exited before becoming ready"
     case .readinessTimedOut(let app, let port):

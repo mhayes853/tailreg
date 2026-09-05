@@ -96,7 +96,10 @@ the resolved URLs before returning. The child then follows the same supervision
 and cleanup path as a foreground invocation.
 
 An attached application has no managed process. Its route and the MUX remain
-live after `tailreg up` returns because Tailreg does not own that process.
+live after `tailreg up` returns because Tailreg does not own that process. The
+attach URL already names a port, so `--attach` with `--port` is rejected rather
+than resolved: the two can disagree, and `up` would then wait for readiness on
+one port while publishing the other.
 
 ## 4. Project configuration
 
