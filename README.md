@@ -4,8 +4,8 @@ A simple Swift based solution for managing local deployments through a tailnet.
 
 ## Package layout
 
-- TailregCore contains Tailscale integration, process/IO primitives, logging,
-  request classification/refinement, and the shared SQLite persistence layer.
+- TailregCore contains Tailscale integration, process/IO primitives, request
+  classification/refinement, and the shared SQLite persistence layer.
 - TailregMultiplexer contains route registration, HTTP proxying, and capture.
 - TailregCLI contains project discovery, TOML configuration, MUX reconciliation,
   Tailscale binding, and application supervision.

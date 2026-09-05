@@ -81,11 +81,6 @@ public final class LaunchedProcess: Sendable {
     signal(SIGTERM, to: -pid)
   }
 
-  /// Forcefully stops a process group whose leader is this child.
-  public func forceTerminateProcessGroup() {
-    signal(SIGKILL, to: -pid)
-  }
-
   /// Signals only while the exit is still outstanding, so a reaped child's PID — which the
   /// kernel is free to hand to something else — is never signalled on this process's behalf.
   private func signal(_ number: Int32, to target: Int32) {

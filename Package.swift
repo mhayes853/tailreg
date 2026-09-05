@@ -44,10 +44,6 @@ let package = Package(
       from: "1.1.5"
     ),
     .package(
-      url: "https://github.com/pointfreeco/swift-clocks",
-      from: "1.1.0"
-    ),
-    .package(
       url: "https://github.com/apple/swift-argument-parser",
       from: "1.8.2"
     ),
@@ -65,7 +61,6 @@ let package = Package(
     .target(
       name: "TailregCore",
       dependencies: [
-        .product(name: "AsyncAlgorithms", package: "swift-async-algorithms"),
         .product(name: "EdgeTools", package: "swift-edge-tools"),
         .product(name: "SQLiteData", package: "sqlite-data"),
         .product(name: "UUIDV7", package: "swift-uuidv7")
@@ -118,7 +113,7 @@ let package = Package(
       dependencies: [
         "TailregCore",
         "TailregTestSupport",
-        .product(name: "Clocks", package: "swift-clocks")
+        .product(name: "AsyncAlgorithms", package: "swift-async-algorithms")
       ]
     ),
     .testTarget(

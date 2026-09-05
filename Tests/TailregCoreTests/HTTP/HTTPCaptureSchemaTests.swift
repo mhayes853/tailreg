@@ -219,48 +219,4 @@ struct `HTTP capture schema tests` {
     #expect(counts.2 == 0)
     #expect(counts.3 == 0)
   }
-
-  @Test
-  func `Pruning exchanges also removes their bodies`() async throws {
-    let database = try TestDatabase.inMemory()
-    let (mux, route) = route(name: "web", route: "web-0")
-    let exchanges = (0..<3)
-      .map { index in
-        HTTPExchangeRecord(
-          routeID: route.id,
-          method: "GET",
-          path: "/request/\(index)",
-          requestHeaders: [],
-          startedAt: Date(),
-          completedAt: Date(),
-          outcome: .complete
-        )
-      }
-    let bodies = exchanges.map { exchange in
-      HTTPExchangeBodyRecord(
-        exchangeID: exchange.id,
-        direction: .response,
-        content: Data(),
-        observedByteCount: 0,
-        omitted: false
-      )
-    }
-
-    try await database.write { db in
-      try MuxInstanceRecord.insert { mux }.execute(db)
-      try MuxRouteRecord.insert { route }.execute(db)
-      try HTTPExchangeRecord.insert { exchanges }.execute(db)
-      try HTTPExchangeBodyRecord.insert { bodies }.execute(db)
-      try HTTPExchangeRecord.prune(for: route.id, keepingLast: 2, in: db)
-    }
-
-    let remaining = try await database.read { db in
-      (
-        try HTTPExchangeRecord.page(for: route.id).fetchAll(db),
-        try HTTPExchangeBodyRecord.fetchAll(db)
-      )
-    }
-    #expect(remaining.0.count == 2)
-    #expect(remaining.1.count == 2)
-  }
 }

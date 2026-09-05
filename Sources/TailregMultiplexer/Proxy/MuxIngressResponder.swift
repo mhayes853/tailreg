@@ -18,6 +18,12 @@ public struct MuxIngressResponder: HTTPResponder, Sendable {
     case invalidURL
   }
 
+  /// Marks an error as coming from the upstream read side of a proxied body, so a single
+  /// `catch` can tell it apart from a failure writing back to the client.
+  private struct UpstreamReadFailure: Error {
+    let underlying: Error
+  }
+
   private let cookieName: String
   private let publicScheme: PublicScheme
   private let pathPolicy: MuxPathPolicy
@@ -265,37 +271,28 @@ public struct MuxIngressResponder: HTTPResponder, Sendable {
     ResponseBody { writer in
       var capture = BodyCapture()
       var iterator = upstreamBody.makeAsyncIterator()
-      while true {
-        let next: ByteBuffer?
-        do {
-          next = try await iterator.next()
-        } catch {
-          finishCapture(
-            capture,
-            exchangeID: exchangeID,
-            contentType: contentType,
-            outcome: .failed,
-            failure: "response_stream_failed"
-          )
-          throw error
-        }
-        guard let buffer = next else { break }
-        capture.observe(buffer)
-        do {
-          try await writer.write(buffer)
-        } catch {
-          finishCapture(
-            capture,
-            exchangeID: exchangeID,
-            contentType: contentType,
-            outcome: .cancelled,
-            failure: "client_disconnected"
-          )
-          throw error
-        }
-      }
       do {
+        while true {
+          let next: ByteBuffer?
+          do {
+            next = try await iterator.next()
+          } catch {
+            throw UpstreamReadFailure(underlying: error)
+          }
+          guard let buffer = next else { break }
+          capture.observe(buffer)
+          try await writer.write(buffer)
+        }
         try await writer.finish(nil)
+      } catch let readFailure as UpstreamReadFailure {
+        finishCapture(
+          capture,
+          exchangeID: exchangeID,
+          contentType: contentType,
+          outcome: .failed,
+          failure: "response_stream_failed"
+        )
+        throw readFailure.underlying
       } catch {
         finishCapture(
           capture,

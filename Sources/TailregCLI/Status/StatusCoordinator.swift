@@ -297,48 +297,33 @@ struct StatusCoordinator: Sendable {
     isConfigured: Bool
   ) -> [StatusProblem] {
     var problems: [StatusProblem] = []
+    func note(_ subject: String, _ kind: StatusProblem.Kind, _ detail: String) {
+      problems.append(StatusProblem(subject: subject, kind: kind, detail: detail))
+    }
 
     if let runtime, runtime.exposure == .tailnet, bindings.isEmpty {
-      problems.append(
-        StatusProblem(
-          subject: "binding",
-          kind: .missing,
-          detail: "no live binding for ingress port \(runtime.ingressPort)"
-        )
-      )
+      note("binding", .missing, "no live binding for ingress port \(runtime.ingressPort)")
     }
     // A binding is kept by the runs that hold it and removed with the last of them, so one with
     // no holder is the trace of a teardown that never finished.
     let held = Set(runs.compactMap(\.bindingID))
     for binding in bindings where !held.contains(binding.id) {
-      problems.append(
-        StatusProblem(
-          subject: "binding",
-          kind: .unheldBinding,
-          detail:
-            "\(binding.url?.absoluteString ?? "tailnet port \(binding.tailnetPort)") is held by no application run"
-        )
+      note(
+        "binding",
+        .unheldBinding,
+        "\(binding.url?.absoluteString ?? "tailnet port \(binding.tailnetPort)") is held by no application run"
       )
     }
 
     switch mux.state {
     case .unreachable:
-      problems.append(
-        StatusProblem(
-          subject: "mux",
-          kind: .unreachable,
-          detail:
-            "alive as pid \(mux.pid ?? 0), not answering on admin port \(mux.adminPort?.description ?? "0")"
-        )
+      note(
+        "mux",
+        .unreachable,
+        "alive as pid \(mux.pid ?? 0), not answering on admin port \(mux.adminPort?.description ?? "0")"
       )
     case .stale:
-      problems.append(
-        StatusProblem(
-          subject: "mux",
-          kind: .staleProcess,
-          detail: "recorded as running, but pid \(mux.pid ?? 0) is gone"
-        )
-      )
+      note("mux", .staleProcess, "recorded as running, but pid \(mux.pid ?? 0) is gone")
     case .running, .notRunning:
       break
     }
@@ -346,21 +331,16 @@ struct StatusCoordinator: Sendable {
     for application in applications {
       switch application.state {
       case .stale:
-        problems.append(
-          StatusProblem(
-            subject: application.name,
-            kind: .staleProcess,
-            detail: "pid \(application.pid ?? 0) is not the process that started it"
-          )
+        note(
+          application.name,
+          .staleProcess,
+          "pid \(application.pid ?? 0) is not the process that started it"
         )
       case .unreachable:
-        problems.append(
-          StatusProblem(
-            subject: application.name,
-            kind: .notListening,
-            detail:
-              "attached upstream \(authority(of: application.route)) is not listening"
-          )
+        note(
+          application.name,
+          .notListening,
+          "attached upstream \(authority(of: application.route)) is not listening"
         )
       case .running, .unverified, .stopped:
         break
@@ -369,14 +349,12 @@ struct StatusCoordinator: Sendable {
       // Only meaningful against a configuration. Without a `tailreg.toml` every application is
       // ad hoc, and reporting each one as unconfigured would be noise rather than a finding.
       if isConfigured, !application.configured, application.state != .stopped {
-        problems.append(
-          StatusProblem(
-            subject: application.name,
-            kind: .notConfigured,
-            detail: application.route == nil
-              ? "is running but is not in tailreg.toml"
-              : "has a live route but is not in tailreg.toml"
-          )
+        note(
+          application.name,
+          .notConfigured,
+          application.route == nil
+            ? "is running but is not in tailreg.toml"
+            : "has a live route but is not in tailreg.toml"
         )
       }
     }
@@ -385,13 +363,7 @@ struct StatusCoordinator: Sendable {
     // route with no owning run is the trace of an invocation that died between the two.
     let owned = Set(runs.compactMap(\.routeID))
     for route in routes where !owned.contains(route.id) {
-      problems.append(
-        StatusProblem(
-          subject: route.route.rawValue,
-          kind: .orphanedRoute,
-          detail: "served with no application run to own it"
-        )
-      )
+      note(route.route.rawValue, .orphanedRoute, "served with no application run to own it")
     }
     return problems
   }

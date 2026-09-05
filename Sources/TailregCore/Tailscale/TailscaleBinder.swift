@@ -105,15 +105,6 @@ public actor TailscaleBinder {
     }
   }
 
-  @discardableResult
-  public func unbindAll() async throws -> [TailscaleBinding] {
-    try await gate.withGate {
-      try await self.fileLock.withLock(.exclusive) {
-        try await self.performRemove(\.isManaged)
-      }
-    }
-  }
-
   // MARK: - Operations
 
   private func performBind(

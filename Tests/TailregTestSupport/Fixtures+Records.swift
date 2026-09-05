@@ -41,24 +41,4 @@ extension TailscaleBindingRecord {
       endReason: endReason
     )
   }
-
-  /// Inserts a binding and reports its identifier, for the tests whose subject is what hangs off
-  /// a binding rather than the binding itself.
-  @discardableResult
-  public static func insertFixture(
-    into database: any DatabaseWriter,
-    tailnetPort: PortNumber = .fixed(443),
-    endedAt: Date? = nil
-  ) async throws -> UUIDV7 {
-    let record = fixture(
-      tailnetPort: tailnetPort,
-      status: endedAt == nil ? .active : .ended,
-      endedAt: endedAt,
-      endReason: endedAt == nil ? nil : .unbound
-    )
-    try await database.write { db in
-      try TailscaleBindingRecord.insert { record }.execute(db)
-    }
-    return record.id
-  }
 }

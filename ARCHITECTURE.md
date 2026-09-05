@@ -301,9 +301,8 @@ may expose MUX and Tailscale diagnostics without mixing them into normal output.
 Foreground and background execution must write through the same per-application
 sink so that log behavior does not depend on how `up` was launched. The current
 background invocation log is only a bootstrap diagnostic and is not the durable
-interface for this command. Existing `LogRecord` rows belong to Tailscale
-bindings, so application output needs its own run-scoped records or durable file
-reference rather than overloading that table.
+interface for this command. The `logs` table in the schema is unused legacy;
+application output needs its own run-scoped records rather than reviving it.
 
 ### `tailreg requests` and `tailreg request`
 

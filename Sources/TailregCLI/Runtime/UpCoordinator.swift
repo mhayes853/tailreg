@@ -158,14 +158,7 @@ struct UpCoordinator: Sendable {
     let result = UpResult(
       projectName: project.record.name,
       baseURL: baseURL,
-      applications: running.map {
-        StartedApplication(
-          name: $0.name,
-          route: $0.route?.route,
-          publicURL: $0.route.flatMap { URL(string: $0.publicPath, relativeTo: baseURL) },
-          pid: $0.process?.pid
-        )
-      }
+      applications: running.map { $0.started(baseURL: baseURL) }
     )
     await printSummary(result)
     await onReady(result)
@@ -303,15 +296,14 @@ struct UpCoordinator: Sendable {
         projectID: projectID
       )
       do {
-        var running = try await publish(
+        return try await publish(
           specification,
           run: appRun,
           process: launched?.process,
+          outputTasks: launched?.outputTasks ?? [],
           admin: admin,
           database: database
         )
-        running.outputTasks = launched?.outputTasks ?? []
-        return running
       } catch {
         // The run was recorded but never published. An attached run has no process for
         // `reclaimAbandoned` to disprove, so it would otherwise block this application until the
@@ -420,25 +412,22 @@ struct UpCoordinator: Sendable {
     _ specification: ApplicationSpecification,
     run appRun: AppRunRecord,
     process: LaunchedProcess?,
+    outputTasks: [Task<Void, Never>],
     admin: MuxAdminClient,
     database: any DatabaseWriter
   ) async throws -> RunningApplication {
-    let route: MuxRouteResponse?
-    let previousRoute: MuxRouteResponse?
+    var route: MuxRouteResponse?
+    var previousRoute: MuxRouteResponse?
     if let exposure = specification.exposure {
-      let existing: MuxRouteResponse?
       if let requestedRoute = exposure.route {
-        existing = try await admin.routes().first { $0.route == requestedRoute }
-      } else {
-        existing = nil
+        previousRoute = try await admin.routes().first { $0.route == requestedRoute }
       }
-      if let existing {
+      if let previousRoute {
         route = try await admin.update(
-          route: existing.route,
+          route: previousRoute.route,
           upstream: exposure.upstream.url,
           pathMode: exposure.pathMode
         )
-        previousRoute = existing
       } else {
         route = try await admin.register(
           MuxRouteRegistrationRequest(
@@ -448,11 +437,7 @@ struct UpCoordinator: Sendable {
             pathMode: exposure.pathMode
           )
         )
-        previousRoute = nil
       }
-    } else {
-      route = nil
-      previousRoute = nil
     }
     if let route {
       let routeID: UUIDV7? = route.id
@@ -469,7 +454,7 @@ struct UpCoordinator: Sendable {
       process: process,
       route: route,
       previousRoute: previousRoute,
-      outputTasks: []
+      outputTasks: outputTasks
     )
   }
 
@@ -640,7 +625,16 @@ private struct RunningApplication: Sendable {
   let process: LaunchedProcess?
   let route: MuxRouteResponse?
   let previousRoute: MuxRouteResponse?
-  var outputTasks: [Task<Void, Never>]
+  let outputTasks: [Task<Void, Never>]
+
+  func started(baseURL: URL) -> StartedApplication {
+    StartedApplication(
+      name: name,
+      route: route?.route,
+      publicURL: route.flatMap { URL(string: $0.publicPath, relativeTo: baseURL) },
+      pid: process?.pid
+    )
+  }
 }
 
 private final class SignalSupervisor: @unchecked Sendable {

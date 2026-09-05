@@ -73,12 +73,6 @@ public enum TerminationOutcome: Hashable, Sendable, CustomStringConvertible {
   /// blocked in an uninterruptible wait, and the one outcome that means it is still running.
   case unresponsive(after: Duration)
 
-  /// Whether the target ended up stopped, however it got there.
-  public var isStopped: Bool {
-    if case .unresponsive = self { return false }
-    return true
-  }
-
   public var description: String {
     switch self {
     case .alreadyExited: "already stopped"

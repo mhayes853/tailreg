@@ -343,21 +343,6 @@ struct `TailscaleBinder tests` {
   }
 
   @Test
-  func `Unbind All Leaves Handlers Tailreg Did Not Create Alone`() async throws {
-    let harness = try makeHarness(
-      handlers: [.init(tailnetPort: 443, localPort: 3773)],
-      listening: [3000]
-    )
-    try await harness.binder.bind(localPort: .fixed(3000), to: .explicit(.fixed(8443)))
-
-    let removed = try await harness.binder.unbindAll()
-
-    #expect(removed.map(\.tailnetPort) == [.fixed(8443)])
-    #expect(harness.daemon.configuredHandlers.map(\.tailnetPort) == [443])
-    #expect(harness.daemon.argvHistory.allSatisfy { $0 != ["serve", "reset"] })
-  }
-
-  @Test
   func `Unbinding Something That Is Not There Is A No Op`() async throws {
     let harness = try makeHarness()
 
