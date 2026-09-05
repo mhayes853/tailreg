@@ -2,15 +2,12 @@ import Foundation
 import SQLiteData
 import TailregCore
 import TailregMultiplexer
+import TailregTestSupport
 import Testing
 import UUIDV7
 
 @Suite
 struct `MUX route persistence tests` {
-  private func database() throws -> any DatabaseWriter {
-    try openTailregDatabase(path: ":memory:", kind: .queue)
-  }
-
   private func multiplexer(
     database: any DatabaseWriter,
     muxID: UUIDV7 = UUIDV7()
@@ -23,7 +20,7 @@ struct `MUX route persistence tests` {
 
   @Test
   func `Duplicate names receive stable incrementing routes`() async throws {
-    let mux = try multiplexer(database: database())
+    let mux = try multiplexer(database: TestDatabase.inMemory())
 
     let first = try await mux.registerRoute(
       name: "Web",
@@ -34,18 +31,18 @@ struct `MUX route persistence tests` {
       upstream: URL(string: "http://127.0.0.1:3001")!
     )
 
-    #expect(first.route == "web-0")
-    #expect(second.route == "web-1")
+    #expect(first.route.rawValue == "web-0")
+    #expect(second.route.rawValue == "web-1")
     #expect(first.publicPath == "/web-0/")
     #expect(try await mux.routes().count == 2)
   }
 
   @Test
   func `An explicit route is used without a generated suffix`() async throws {
-    let mux = try multiplexer(database: database())
+    let mux = try multiplexer(database: TestDatabase.inMemory())
     let binding = try await mux.registerRoute(
       name: "Web",
-      route: "web",
+      route: MuxRouteName(rawValue: "web")!,
       upstream: URL(string: "http://127.0.0.1:3000")!
     )
 
@@ -53,44 +50,37 @@ struct `MUX route persistence tests` {
   }
 
   @Test
-  func `Explicit routes are validated and cannot collide`() async throws {
-    let mux = try multiplexer(database: database())
+  func `Explicit routes cannot collide`() async throws {
+    let mux = try multiplexer(database: TestDatabase.inMemory())
     _ = try await mux.registerRoute(
       name: "API",
-      route: "api",
+      route: MuxRouteName(rawValue: "api")!,
       upstream: URL(string: "http://127.0.0.1:3000")!
     )
 
-    await #expect(throws: MuxRouteError.routeAlreadyExists("api")) {
+    await #expect(throws: MuxRouteError.routeAlreadyExists(MuxRouteName(rawValue: "api")!)) {
       try await mux.registerRoute(
         name: "Other API",
-        route: "api",
+        route: MuxRouteName(rawValue: "api")!,
         upstream: URL(string: "http://127.0.0.1:3001")!
-      )
-    }
-    await #expect(throws: MuxRouteError.invalidRoute) {
-      try await mux.registerRoute(
-        name: "Bad",
-        route: "Bad Route",
-        upstream: URL(string: "http://127.0.0.1:3002")!
       )
     }
   }
 
   @Test
   func `Names are converted to URL-safe route segments`() async throws {
-    let mux = try multiplexer(database: database())
+    let mux = try multiplexer(database: TestDatabase.inMemory())
     let binding = try await mux.registerRoute(
       name: "My Web_App!",
       upstream: URL(string: "https://localhost:3000/base")!
     )
 
-    #expect(binding.route == "my-web-app-0")
+    #expect(binding.route.rawValue == "my-web-app-0")
   }
 
   @Test
   func `Unregistering removes the route from persistence`() async throws {
-    let database = try database()
+    let database = try TestDatabase.inMemory()
     let muxID = UUIDV7()
     let mux = try multiplexer(database: database, muxID: muxID)
     let binding = try await mux.registerRoute(
@@ -107,7 +97,7 @@ struct `MUX route persistence tests` {
 
   @Test
   func `Invalid routes are rejected`() async throws {
-    let mux = try multiplexer(database: database())
+    let mux = try multiplexer(database: TestDatabase.inMemory())
 
     await #expect(throws: MuxRouteError.invalidName) {
       try await mux.registerRoute(name: "---", upstream: URL(string: "http://localhost:3000")!)
@@ -119,7 +109,7 @@ struct `MUX route persistence tests` {
 
   @Test
   func `A MUX observes routes committed through another instance`() async throws {
-    let database = try database()
+    let database = try TestDatabase.inMemory()
     let muxID = UUIDV7()
     let firstMux = try multiplexer(database: database, muxID: muxID)
     let observingMux = try multiplexer(database: database, muxID: muxID)
@@ -137,7 +127,7 @@ struct `MUX route persistence tests` {
 
   @Test
   func `Different MUX instances can use the same route`() async throws {
-    let database = try database()
+    let database = try TestDatabase.inMemory()
     let first = try multiplexer(database: database)
     let second = try multiplexer(database: database)
 
@@ -150,14 +140,14 @@ struct `MUX route persistence tests` {
       upstream: URL(string: "http://127.0.0.1:3001")!
     )
 
-    #expect(firstRoute.route == "web-0")
-    #expect(secondRoute.route == "web-0")
+    #expect(firstRoute.route.rawValue == "web-0")
+    #expect(secondRoute.route.rawValue == "web-0")
     #expect(firstRoute.muxID != secondRoute.muxID)
   }
 
   @Test
   func `Updating a route changes its upstream and path mode durably`() async throws {
-    let database = try database()
+    let database = try TestDatabase.inMemory()
     let muxID = UUIDV7()
     let mux = try multiplexer(database: database, muxID: muxID)
     let original = try await mux.registerRoute(

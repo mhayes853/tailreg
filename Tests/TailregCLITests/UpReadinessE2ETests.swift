@@ -102,7 +102,7 @@ struct `Up readiness E2E tests` {
         UpRequest(
           projectPath: fixture.path,
           adHocApplication: "squat",
-          route: "squat",
+          route: MuxRouteName(rawValue: "squat")!,
           port: PortNumber(port),
           command: command,
           localOnly: true

@@ -1,10 +1,11 @@
 import Foundation
-#if canImport(FoundationNetworking)
-  import FoundationNetworking
-#endif
 import Testing
 
 @testable import TailregCLI
+
+#if canImport(FoundationNetworking)
+  import FoundationNetworking
+#endif
 
 @Suite(.serialized, .timeLimit(.minutes(1)))
 struct `Up coordinator E2E tests` {
@@ -41,7 +42,7 @@ struct `Up coordinator E2E tests` {
     }
 
     #expect(result.projectName == "storefront")
-    #expect(Set(result.applications.compactMap(\.route)) == ["api", "web"])
+    #expect(Set(result.applications.compactMap { $0.route?.rawValue }) == ["api", "web"])
     let outcome = await observation.outcome
     #expect(outcome == .success)
   }

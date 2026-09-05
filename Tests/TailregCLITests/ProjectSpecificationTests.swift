@@ -36,6 +36,24 @@ struct `Project specification tests` {
     #expect(selected.map { $0.map(\.name) } == [["api"], ["web"]])
   }
 
+  /// The route in `tailreg.toml` is the one the MUX and the schema have to accept, so a name
+  /// they could not serve is reported against the application that wrote it.
+  @Test
+  func `Rejects a route the MUX could not serve`() throws {
+    let fixture = try TOMLFixture(
+      """
+      [apps.web]
+      route = "Café"
+      port = 3000
+      command = ["web"]
+      """
+    )
+
+    #expect(throws: ProjectSpecificationError.invalidRoute(application: "web", route: "Café")) {
+      try ProjectSpecification.load(from: fixture.file)
+    }
+  }
+
   @Test
   func `Rejects duplicate routes`() throws {
     let fixture = try TOMLFixture(

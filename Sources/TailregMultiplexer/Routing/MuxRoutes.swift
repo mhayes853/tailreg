@@ -7,7 +7,7 @@ public struct MultiplexerBinding: Equatable, Sendable {
   public let id: UUIDV7
   public let muxID: UUIDV7
   public let name: String
-  public let route: String
+  public let route: MuxRouteName
   public let upstream: URL
   public let pathMode: MuxRoutePathMode
   private let pathPolicy: MuxPathPolicy
@@ -30,8 +30,7 @@ public struct MultiplexerBinding: Equatable, Sendable {
 
 public enum MuxRouteError: Error, Equatable, Sendable {
   case invalidName
-  case invalidRoute
-  case routeAlreadyExists(String)
+  case routeAlreadyExists(MuxRouteName)
   case invalidUpstream
   case invalidPersistedUpstream(String)
   case routeNotFound
@@ -51,7 +50,7 @@ enum MuxRouteQueries {
 
   static func live(
     muxID: UUIDV7,
-    route: String,
+    route: MuxRouteName,
     in database: Database
   ) throws -> MuxRouteRecord? {
     try MuxRouteRecord.live(muxID: muxID, route: route).fetchOne(database)
@@ -60,7 +59,7 @@ enum MuxRouteQueries {
   static func register(
     muxID: UUIDV7,
     name: String,
-    requestedRoute: String?,
+    requestedRoute: MuxRouteName?,
     upstream: URL,
     pathMode: MuxRoutePathMode,
     in database: Database
@@ -71,21 +70,14 @@ enum MuxRouteQueries {
     try validate(upstream: upstream)
 
     let occupiedRoutes = Set(try live(muxID: muxID, in: database).map(\.route))
-    let route: String
+    let route: MuxRouteName
     if let requestedRoute {
-      guard MuxRouteName.isValid(requestedRoute) else { throw MuxRouteError.invalidRoute }
       guard !occupiedRoutes.contains(requestedRoute) else {
         throw MuxRouteError.routeAlreadyExists(requestedRoute)
       }
       route = requestedRoute
     } else {
-      var suffix = 0
-      var candidate = "\(normalizedName)-\(suffix)"
-      while occupiedRoutes.contains(candidate) {
-        suffix += 1
-        candidate = "\(normalizedName)-\(suffix)"
-      }
-      route = candidate
+      route = try generatedRoute(for: normalizedName, avoiding: occupiedRoutes)
     }
 
     let record = MuxRouteRecord(
@@ -102,7 +94,7 @@ enum MuxRouteQueries {
 
   static func update(
     muxID: UUIDV7,
-    route: String,
+    route: MuxRouteName,
     upstream: URL,
     pathMode: MuxRoutePathMode?,
     in database: Database
@@ -125,7 +117,7 @@ enum MuxRouteQueries {
 
   static func unregister(
     muxID: UUIDV7,
-    route: String,
+    route: MuxRouteName,
     in database: Database
   ) throws -> MuxRouteRecord? {
     guard let record = try live(muxID: muxID, route: route, in: database) else {
@@ -136,6 +128,25 @@ enum MuxRouteQueries {
       .update { $0.endedAt = #bind(Date()) }
       .execute(database)
     return record
+  }
+
+  /// The first `<name>-<suffix>` this MUX is not already serving.
+  ///
+  /// The suffix is what makes two applications of the same name addressable, so the name is
+  /// normalized first and the pair is then built through the route initializer rather than
+  /// assumed to be well formed.
+  private static func generatedRoute(
+    for normalizedName: String,
+    avoiding occupiedRoutes: Set<MuxRouteName>
+  ) throws -> MuxRouteName {
+    var suffix = 0
+    while true {
+      guard let candidate = MuxRouteName(rawValue: "\(normalizedName)-\(suffix)") else {
+        throw MuxRouteError.invalidName
+      }
+      if !occupiedRoutes.contains(candidate) { return candidate }
+      suffix += 1
+    }
   }
 
   private static func validate(upstream: URL) throws {
@@ -151,21 +162,5 @@ enum MuxRouteQueries {
 
     guard !normalized.isEmpty else { return nil }
     return String(normalized.prefix(48))
-  }
-}
-
-/// The shape of an explicitly requested route: what may appear as the first path segment.
-///
-/// The CLI validates `tailreg.toml` against this before anything is launched, and the MUX
-/// validates registrations against it, so the two cannot disagree about what a route may be.
-public enum MuxRouteName {
-  public static func isValid(_ route: String) -> Bool {
-    guard route == route.lowercased(), route.count <= 64 else { return false }
-    let characters = Array(route)
-    guard let first = characters.first, let last = characters.last,
-      first.isLetter || first.isNumber,
-      last.isLetter || last.isNumber
-    else { return false }
-    return characters.allSatisfy { $0.isLowercase || $0.isNumber || $0 == "-" }
   }
 }

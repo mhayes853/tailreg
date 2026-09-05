@@ -2,32 +2,6 @@ import Hummingbird
 import TailregCore
 import UUIDV7
 
-public enum CapturedHeaderPolicy: Equatable, Sendable {
-  case redactSensitiveValues
-  case retainAllValues
-}
-
-public enum UnmatchedPathPolicy: Equatable, Sendable {
-  case reject
-  case lastSelectedRouteCompatibility
-}
-
-extension CapturedHeaderPolicy {
-  private static let sensitiveNames: Set<String> = [
-    "authorization", "cookie", "proxy-authorization", "set-cookie", "x-api-key"
-  ]
-
-  func capture(name: String, value: String) -> CapturedHTTPHeader {
-    let normalizedName = name.lowercased()
-    let shouldRedact =
-      self == .redactSensitiveValues && Self.sensitiveNames.contains(normalizedName)
-    return CapturedHTTPHeader(
-      name: normalizedName,
-      value: shouldRedact ? "[REDACTED]" : value
-    )
-  }
-}
-
 /// Answered on the admin API. Carries the MUX's identity because admin ports are allocated by
 /// probing and can be taken by another MUX in between: a caller has to be able to tell that the
 /// port it recorded is still answering for the MUX it recorded.
@@ -53,13 +27,13 @@ public struct MultiplexerErrorResponse: ResponseCodable, Equatable, Sendable {
 
 public struct MuxRouteRegistrationRequest: Codable, Equatable, Sendable {
   public let name: String
-  public let route: String?
+  public let route: MuxRouteName?
   public let upstreamURL: String
   public let pathMode: MuxRoutePathMode
 
   public init(
     name: String,
-    route: String? = nil,
+    route: MuxRouteName? = nil,
     upstreamURL: String,
     pathMode: MuxRoutePathMode = .stripRoutePrefix
   ) {
@@ -84,7 +58,7 @@ public struct MuxRouteResponse: ResponseCodable, Equatable, Sendable {
   public let id: UUIDV7
   public let muxID: UUIDV7
   public let name: String
-  public let route: String
+  public let route: MuxRouteName
   public let upstreamURL: String
   public let pathMode: MuxRoutePathMode
   public let publicPath: String

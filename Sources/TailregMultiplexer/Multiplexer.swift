@@ -7,29 +7,44 @@ import TailregCore
 import UUIDV7
 import UnixSignals
 
+/// The scheme the MUX is reached on from outside.
+///
+/// Tailscale terminates TLS in front of a project MUX, so `https` is the normal case; `http` is
+/// for a MUX reached directly, where a browser would refuse the cookies TLS allows.
+public enum PublicScheme: String, Sendable {
+  case https
+  case http
+}
+
 public struct Multiplexer: Sendable {
   public struct Configuration: Equatable, Sendable {
-    public var adminHost: String
-    public var adminPort: Int
-    public var id: UUIDV7
-    public var ingressHost: String
-    public var ingressPort: Int
-    public var pathPolicy: MuxPathPolicy
-    public var unmatchedPathPolicy: UnmatchedPathPolicy
-    public var routingCookieName: String
-    public var secureCookies: Bool
-    public var capturedHeaderPolicy: CapturedHeaderPolicy
+    public static let defaultAdminPort = PortNumber(rawValue: 9_100)!
+    public static let defaultIngressPort = PortNumber(rawValue: 9_000)!
+
+    public let adminHost: String
+    public let adminPort: PortNumber
+    public let id: UUIDV7
+    public let ingressHost: String
+    public let ingressPort: PortNumber
+    public let pathPolicy: MuxPathPolicy
+    public let unmatchedPathPolicy: UnmatchedPathPolicy
+    public let routingCookieName: String
+    public let publicScheme: PublicScheme
+    public let capturedHeaderPolicy: CapturedHeaderPolicy
+
+    /// Whether the routing cookie may be marked `Secure`, which a browser only honors over TLS.
+    public var secureCookies: Bool { publicScheme == .https }
 
     public init(
       adminHost: String = "127.0.0.1",
-      adminPort: Int = 9100,
+      adminPort: PortNumber = Configuration.defaultAdminPort,
       id: UUIDV7 = UUIDV7(),
       ingressHost: String = "127.0.0.1",
-      ingressPort: Int = 9000,
+      ingressPort: PortNumber = Configuration.defaultIngressPort,
       pathPolicy: MuxPathPolicy = MuxPathPolicy(),
       unmatchedPathPolicy: UnmatchedPathPolicy = .reject,
       routingCookieName: String? = nil,
-      secureCookies: Bool = true,
+      publicScheme: PublicScheme = .https,
       capturedHeaderPolicy: CapturedHeaderPolicy = .redactSensitiveValues
     ) {
       self.adminHost = adminHost
@@ -39,17 +54,15 @@ public struct Multiplexer: Sendable {
       self.ingressPort = ingressPort
       self.pathPolicy = pathPolicy
       self.unmatchedPathPolicy = unmatchedPathPolicy
-      self.routingCookieName =
-        routingCookieName
-        ?? "__Host-tailreg-route-\(id.uuidString.lowercased())"
-      self.secureCookies = secureCookies
+      self.routingCookieName = routingCookieName ?? publicScheme.routingCookieName(muxID: id)
+      self.publicScheme = publicScheme
       self.capturedHeaderPolicy = capturedHeaderPolicy
     }
   }
 
   public let configuration: Configuration
   public let database: any DatabaseWriter
-  public let captureRecorder: CaptureRecorder?
+  public let captureRecorder: CaptureRecorder
 
   /// Creates an ephemeral MUX backed by an in-memory database.
   public init(configuration: Configuration = Configuration()) throws {
@@ -73,81 +86,13 @@ public struct Multiplexer: Sendable {
     )
   }
 
-  public func buildApplication() -> Application<RouterResponder<BasicRequestContext>> {
-    let router = Router()
-    router.get("/status") { _, _ in
-      MultiplexerStatus(status: "ok", id: configuration.id)
-    }
-    router.get("/routes") { _, _ in
-      try await routes().map(MuxRouteResponse.init)
-    }
-    router.post("/routes") { request, context -> MuxRouteResponse in
-      let registration: MuxRouteRegistrationRequest
-      do {
-        registration = try await request.decode(
-          as: MuxRouteRegistrationRequest.self,
-          context: context
-        )
-      } catch {
-        throw HTTPError(.badRequest)
-      }
-      guard let upstream = URL(string: registration.upstreamURL) else {
-        throw HTTPError(.badRequest)
-      }
-      do {
-        return try await MuxRouteResponse(
-          registerRoute(
-            name: registration.name,
-            route: registration.route,
-            upstream: upstream,
-            pathMode: registration.pathMode
-          )
-        )
-      } catch MuxRouteError.invalidName, MuxRouteError.invalidRoute,
-        MuxRouteError.routeAlreadyExists, MuxRouteError.invalidUpstream
-      {
-        throw HTTPError(.badRequest)
-      }
-    }
-    router.put("/routes/:route") { request, context -> MuxRouteResponse in
-      let route = try context.parameters.require("route")
-      let update: MuxRouteUpdateRequest
-      do {
-        update = try await request.decode(as: MuxRouteUpdateRequest.self, context: context)
-      } catch {
-        throw HTTPError(.badRequest)
-      }
-      guard let upstream = URL(string: update.upstreamURL) else {
-        throw HTTPError(.badRequest)
-      }
-      do {
-        return try await MuxRouteResponse(
-          updateRoute(route: route, upstream: upstream, pathMode: update.pathMode)
-        )
-      } catch MuxRouteError.routeNotFound {
-        throw HTTPError(.notFound)
-      } catch MuxRouteError.invalidUpstream {
-        throw HTTPError(.badRequest)
-      }
-    }
-    router.delete("/routes/:route") { _, context -> HTTPResponse.Status in
-      let route = try context.parameters.require("route")
-      guard try await unregisterRoute(route: route) != nil else {
-        throw HTTPError(.notFound)
-      }
-      return .noContent
-    }
-
-    return Application(
-      router: router,
-      configuration: ApplicationConfiguration(
-        address: .hostname(configuration.adminHost, port: configuration.adminPort),
-        serverName: "tailreg-mux"
-      )
-    )
-  }
-
-  public func buildIngressApplication() -> Application<MuxIngressResponder> {
+  /// The public ingress listener, optionally sharing its lifetime with `services`.
+  ///
+  /// Anything a MUX process runs beside ingress — the upstreams an E2E fixture stands up, a
+  /// capture admin listener — belongs to the same service group, so one shutdown stops them all.
+  public func buildIngressApplication(
+    services: [any Service] = []
+  ) -> Application<MuxIngressResponder> {
     Application(
       responder: MuxIngressResponder(
         database: database,
@@ -155,14 +100,15 @@ public struct Multiplexer: Sendable {
         pathPolicy: configuration.pathPolicy,
         unmatchedPathPolicy: configuration.unmatchedPathPolicy,
         cookieName: configuration.routingCookieName,
-        secureCookies: configuration.secureCookies,
+        publicScheme: configuration.publicScheme,
         capturedHeaderPolicy: configuration.capturedHeaderPolicy,
         captureRecorder: captureRecorder
       ),
       configuration: ApplicationConfiguration(
-        address: .hostname(configuration.ingressHost, port: configuration.ingressPort),
+        address: .hostname(configuration.ingressHost, port: configuration.ingressPort.intValue),
         serverName: "tailreg-mux-ingress"
-      )
+      ),
+      services: services
     )
   }
 
@@ -179,7 +125,7 @@ public struct Multiplexer: Sendable {
     }
   }
 
-  public func binding(route: String) async throws -> MultiplexerBinding? {
+  public func binding(route: MuxRouteName) async throws -> MultiplexerBinding? {
     try await database.read { database in
       return try MuxRouteQueries.live(muxID: configuration.id, route: route, in: database)
         .map { try MultiplexerBinding(record: $0, pathPolicy: configuration.pathPolicy) }
@@ -189,7 +135,7 @@ public struct Multiplexer: Sendable {
   @discardableResult
   public func registerRoute(
     name: String,
-    route: String? = nil,
+    route: MuxRouteName? = nil,
     upstream: URL,
     pathMode: MuxRoutePathMode = .stripRoutePrefix
   ) async throws -> MultiplexerBinding {
@@ -211,7 +157,7 @@ public struct Multiplexer: Sendable {
 
   @discardableResult
   public func updateRoute(
-    route: String,
+    route: MuxRouteName,
     upstream: URL,
     pathMode: MuxRoutePathMode? = nil
   ) async throws -> MultiplexerBinding {
@@ -231,7 +177,7 @@ public struct Multiplexer: Sendable {
   }
 
   @discardableResult
-  public func unregisterRoute(route: String) async throws -> MultiplexerBinding? {
+  public func unregisterRoute(route: MuxRouteName) async throws -> MultiplexerBinding? {
     try await database.write { database in
       try MuxRouteQueries.prepare(muxID: configuration.id, in: database)
       return try MuxRouteQueries.unregister(muxID: configuration.id, route: route, in: database)
@@ -249,12 +195,29 @@ public struct Multiplexer: Sendable {
         logger: Logger(label: "tailreg-mux")
       )
     )
+    // The recorder is still holding a batch that has not reached the database, so it is drained
+    // on the way out whether the group stopped cleanly or failed.
+    let failure: (any Error)?
     do {
       try await group.run()
-      await captureRecorder?.finish()
+      failure = nil
     } catch {
-      await captureRecorder?.finish()
-      throw error
+      failure = error
+    }
+    await captureRecorder.finish()
+    if let failure { throw failure }
+  }
+}
+
+extension PublicScheme {
+  /// The routing cookie's name when nothing overrides it.
+  ///
+  /// A browser rejects a `__Host-` cookie that is not `Secure`, so a plaintext MUX cannot use the
+  /// prefix that would otherwise pin the cookie to this host and path.
+  fileprivate func routingCookieName(muxID: UUIDV7) -> String {
+    switch self {
+    case .https: "__Host-tailreg-route-\(muxID.uuidString.lowercased())"
+    case .http: "tailreg-route-\(muxID.uuidString.lowercased())"
     }
   }
 }

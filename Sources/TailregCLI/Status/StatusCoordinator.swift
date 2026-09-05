@@ -389,7 +389,7 @@ struct StatusCoordinator: Sendable {
     for route in routes where !owned.contains(route.id) {
       problems.append(
         StatusProblem(
-          subject: route.route,
+          subject: route.route.rawValue,
           kind: .orphanedRoute,
           detail: "served with no application run to own it"
         )

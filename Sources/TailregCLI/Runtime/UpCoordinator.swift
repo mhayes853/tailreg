@@ -14,7 +14,7 @@ struct UpRequest: Sendable {
   var projectPath: String?
   var applicationNames: [String] = []
   var adHocApplication: String?
-  var route: String?
+  var route: MuxRouteName?
   var port: PortNumber?
   var attachURL: URL?
   var command: [String] = []
@@ -30,7 +30,7 @@ struct UpResult: Sendable {
 
 struct StartedApplication: Sendable {
   let name: String
-  let route: String?
+  let route: MuxRouteName?
   let publicURL: URL?
   let pid: Int32?
 }

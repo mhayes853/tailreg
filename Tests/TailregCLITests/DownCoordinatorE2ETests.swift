@@ -35,7 +35,7 @@ struct `Down coordinator E2E tests` {
 
     let runtime = try #require(try await context.runtime())
     let admin = MuxAdminClient(port: runtime.adminPort)
-    let published = try await admin.routes().map(\.route).sorted()
+    let published = try await admin.routes().map(\.route.rawValue).sorted()
     #expect(published == ["api", "web"])
     #expect(await context.status(of: webURL) == 200)
 
@@ -45,7 +45,7 @@ struct `Down coordinator E2E tests` {
     #expect(partial.applications.first?.outcome == .detached)
     #expect(partial.runtime == .stillInUse(routes: 1))
     #expect(partial.isClean)
-    let remaining = try await admin.routes().map(\.route)
+    let remaining = try await admin.routes().map(\.route.rawValue)
     #expect(remaining == ["api"])
     #expect(await context.status(of: webURL) == 404)
     #expect(await context.status(of: apiURL) == 200, "the other route must still be served")
@@ -148,7 +148,7 @@ struct `Down coordinator E2E tests` {
           UpRequest(
             projectPath: fixture.path,
             adHocApplication: name,
-            route: name,
+            route: MuxRouteName(rawValue: name),
             attachURL: URL(string: "http://127.0.0.1:\(port)")!,
             localOnly: true
           )

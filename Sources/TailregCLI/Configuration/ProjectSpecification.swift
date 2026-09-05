@@ -105,7 +105,7 @@ public struct ProjectSpecification: Equatable, Sendable {
 
 public struct ApplicationSpecification: Equatable, Sendable {
   public let name: String
-  public let route: String?
+  public let route: MuxRouteName?
   public let port: PortNumber?
   public let attachURL: URL?
   public let command: ProcessCommand?
@@ -124,7 +124,7 @@ public struct ApplicationSpecification: Equatable, Sendable {
 
   public init(
     name: String,
-    route: String? = nil,
+    route: MuxRouteName? = nil,
     port: PortNumber? = nil,
     attachURL: URL? = nil,
     command: ProcessCommand? = nil,
@@ -165,7 +165,14 @@ public struct ApplicationSpecification: Equatable, Sendable {
     }
     try self.init(
       name: name,
-      route: raw.route,
+      // Parsed here rather than in `RawApplication`, where the name of the table the route was
+      // written in — and so the subject of the error a bad one has to report — is out of scope.
+      route: try raw.route.map { route in
+        guard let route = MuxRouteName(rawValue: route) else {
+          throw ProjectSpecificationError.invalidRoute(application: name, route: route)
+        }
+        return route
+      },
       port: raw.port,
       attachURL: raw.attach.flatMap(URL.init(string:)),
       command: command,
@@ -196,9 +203,6 @@ public struct ApplicationSpecification: Equatable, Sendable {
     }
     if isExposed, listenerPort == nil {
       throw ProjectSpecificationError.missingPort(name)
-    }
-    if let route, !MuxRouteName.isValid(route) {
-      throw ProjectSpecificationError.invalidRoute(application: name, route: route)
     }
   }
 }

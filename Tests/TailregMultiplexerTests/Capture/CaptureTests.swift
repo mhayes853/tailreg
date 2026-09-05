@@ -2,6 +2,7 @@ import Foundation
 import Hummingbird
 import SQLiteData
 import TailregCore
+import TailregTestSupport
 import Testing
 import UUIDV7
 
@@ -52,15 +53,8 @@ struct `MUX capture tests` {
 
   @Test
   func `Batches a completed exchange and its bodies into storage`() async throws {
-    let directory = FileManager.default.temporaryDirectory
-      .appendingPathComponent("tailreg-capture-test-\(UUID().uuidString)", isDirectory: true)
-    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-    defer { try? FileManager.default.removeItem(at: directory) }
-
-    let database = try openTailregDatabase(
-      path: directory.appendingPathComponent("tailreg.sqlite").path,
-      kind: .queue
-    )
+    let directory = try TempDirectory()
+    let database = try TestDatabase.onDisk(in: directory)
     let muxID = UUIDV7()
     let multiplexer = Multiplexer(
       configuration: Multiplexer.Configuration(id: muxID),
@@ -157,15 +151,8 @@ struct `MUX capture tests` {
 
   @Test
   func `Marks exchanges left open by an earlier MUX as abandoned`() async throws {
-    let directory = FileManager.default.temporaryDirectory
-      .appendingPathComponent("tailreg-capture-test-\(UUID().uuidString)", isDirectory: true)
-    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-    defer { try? FileManager.default.removeItem(at: directory) }
-
-    let database = try openTailregDatabase(
-      path: directory.appendingPathComponent("tailreg.sqlite").path,
-      kind: .queue
-    )
+    let directory = try TempDirectory()
+    let database = try TestDatabase.onDisk(in: directory)
     let muxID = UUIDV7()
     let multiplexer = Multiplexer(
       configuration: Multiplexer.Configuration(id: muxID),
@@ -205,7 +192,7 @@ struct `MUX capture tests` {
 
   @Test
   func `Restart recovery does not abandon another MUX's exchanges`() async throws {
-    let database = try openTailregDatabase(path: ":memory:", kind: .queue)
+    let database = try TestDatabase.inMemory()
     let firstMUXID = UUIDV7()
     let secondMUXID = UUIDV7()
     let firstMux = Multiplexer(
@@ -227,8 +214,8 @@ struct `MUX capture tests` {
     // Both multiplexers run their own restart recovery when they are created, and it abandons
     // whatever is in progress for their MUX. Letting that land before these exchanges exist keeps
     // the test about the recorder under test rather than a race with the multiplexers' own.
-    await firstMux.captureRecorder?.flush()
-    await secondMux.captureRecorder?.flush()
+    await firstMux.captureRecorder.flush()
+    await secondMux.captureRecorder.flush()
 
     let firstExchange = HTTPExchangeRecord(
       routeID: firstRoute.id,

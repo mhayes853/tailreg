@@ -82,7 +82,10 @@ struct `MUX Tailscale E2E tests` {
       let captureDatabase = try openTailregDatabase(path: databasePath, kind: .queue)
       for route in ["web-0", "web-1"] {
         let paths: [String] = try await captureDatabase.read { db -> [String] in
-          let routeRecord = try MuxRouteRecord.where { $0.route.eq(route) }.fetchOne(db)
+          let routeRecord =
+            try MuxRouteRecord
+            .where { $0.route.eq(MuxRouteName(rawValue: route)!) }
+            .fetchOne(db)
           guard let routeRecord else { return [String]() }
           return try HTTPExchangeRecord.page(for: routeRecord.id, limit: 100)
             .fetchAll(db)

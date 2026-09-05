@@ -317,7 +317,7 @@ enum RequestClassifier {
   }
 
   private static func frameworkRule(_ tags: RequestTag, suffix: String) -> String {
-    let prefix = frameworkNames.first { tags.contains($0.0) }?.1 ?? "framework"
+    let prefix = tags.intersection(.frameworks).names.first ?? "framework"
     return "\(prefix).\(suffix)"
   }
 
@@ -362,11 +362,5 @@ enum RequestClassifier {
   private static let assetDestinations: Set<String> = [
     "audio", "embed", "font", "image", "manifest", "object", "script", "serviceworker",
     "sharedworker", "style", "track", "video", "worker"
-  ]
-
-  private static let frameworkNames: [(RequestTag, String)] = [
-    (.nextJS, "nextjs"), (.svelteKit, "sveltekit"), (.nuxt, "nuxt"),
-    (.reactRouter, "react-router"), (.astro, "astro"),
-    (.tanStackStart, "tanstack-start"), (.vite, "vite")
   ]
 }

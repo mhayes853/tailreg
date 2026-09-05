@@ -19,7 +19,7 @@ struct `HTTP capture schema tests` {
       MuxRouteRecord(
         muxID: mux.id,
         name: name,
-        route: route,
+        route: MuxRouteName(rawValue: route)!,
         upstreamURL: "http://127.0.0.1:3000",
         createdAt: createdAt
       )

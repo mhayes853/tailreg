@@ -18,7 +18,7 @@ public struct UpCommand: AsyncParsableCommand {
   var app: String?
 
   @Option(name: .long, help: "Stable MUX route for an ad hoc application.")
-  var route: String?
+  var route: MuxRouteName?
 
   @Option(name: .long, help: "Expected local listener port.")
   var port: PortNumber?

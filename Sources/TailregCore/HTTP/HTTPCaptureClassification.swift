@@ -47,6 +47,13 @@ public struct RequestTag: OptionSet, Codable, Hashable, Sendable {
   public static let webSocket = Self(rawValue: Int64(1) << 23)
   public static let headRequest = Self(rawValue: Int64(1) << 24)
 
+  /// The frameworks a request can be attributed to, in the order `names` reports them: the app
+  /// framework before the bundler that serves it, so a Vite-served SvelteKit request reads as
+  /// SvelteKit.
+  public static let frameworks: Self = [
+    .nextJS, .svelteKit, .nuxt, .reactRouter, .astro, .tanStackStart, .vite
+  ]
+
   public func contains(all required: Self) -> Bool {
     intersection(required) == required
   }

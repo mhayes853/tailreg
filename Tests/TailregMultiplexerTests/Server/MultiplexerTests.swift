@@ -2,6 +2,7 @@ import Foundation
 import Hummingbird
 import HummingbirdTesting
 import NIOCore
+import TailregCore
 import TailregMultiplexer
 import Testing
 import UUIDV7
@@ -18,6 +19,18 @@ struct `Multiplexer tests` {
 
     #expect(first.routingCookieName != second.routingCookieName)
     #expect(first.routingCookieName.hasPrefix("__Host-tailreg-route-"))
+  }
+
+  @Test
+  func `The default cookie name only claims the host prefix over TLS`() {
+    let id = UUIDV7()
+    let secure = Multiplexer.Configuration(id: id, publicScheme: .https)
+    let insecure = Multiplexer.Configuration(id: id, publicScheme: .http)
+
+    #expect(secure.routingCookieName == "__Host-tailreg-route-\(id.uuidString.lowercased())")
+    #expect(insecure.routingCookieName == "tailreg-route-\(id.uuidString.lowercased())")
+    #expect(secure.secureCookies)
+    #expect(!insecure.secureCookies)
   }
 
   @Test
@@ -70,13 +83,13 @@ struct `Multiplexer tests` {
       ) { response in
         #expect(response.status == .ok)
         let route = try JSONDecoder().decode(MuxRouteResponse.self, from: response.body)
-        #expect(route.route == "web-app-0")
+        #expect(route.route.rawValue == "web-app-0")
         #expect(route.publicPath == "/web-app-0/")
       }
 
       try await client.execute(uri: "/routes", method: .get) { response in
         let routes = try JSONDecoder().decode([MuxRouteResponse].self, from: response.body)
-        #expect(routes.map(\.route) == ["web-app-0"])
+        #expect(routes.map(\.route.rawValue) == ["web-app-0"])
       }
 
       let update = try JSONEncoder()

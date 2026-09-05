@@ -19,12 +19,12 @@ public struct MuxIngressResponder: HTTPResponder, Sendable {
   }
 
   private let cookieName: String
-  private let secureCookies: Bool
+  private let publicScheme: PublicScheme
   private let pathPolicy: MuxPathPolicy
   private let unmatchedPathPolicy: UnmatchedPathPolicy
   private let routeResolver: MuxRouteResolver
   private let headerPolicy: MuxHeaderPolicy
-  private let captureRecorder: CaptureRecorder?
+  private let captureRecorder: CaptureRecorder
 
   public init(
     database: any DatabaseWriter,
@@ -32,12 +32,12 @@ public struct MuxIngressResponder: HTTPResponder, Sendable {
     pathPolicy: MuxPathPolicy,
     unmatchedPathPolicy: UnmatchedPathPolicy = .reject,
     cookieName: String,
-    secureCookies: Bool,
+    publicScheme: PublicScheme,
     capturedHeaderPolicy: CapturedHeaderPolicy = .redactSensitiveValues,
-    captureRecorder: CaptureRecorder? = nil
+    captureRecorder: CaptureRecorder
   ) {
     self.cookieName = cookieName
-    self.secureCookies = secureCookies
+    self.publicScheme = publicScheme
     self.pathPolicy = pathPolicy
     self.unmatchedPathPolicy = unmatchedPathPolicy
     self.routeResolver = MuxRouteResolver(
@@ -49,7 +49,7 @@ public struct MuxIngressResponder: HTTPResponder, Sendable {
     )
     self.headerPolicy = MuxHeaderPolicy(
       cookieName: cookieName,
-      secureCookies: secureCookies,
+      publicScheme: publicScheme,
       capturedHeaderPolicy: capturedHeaderPolicy
     )
     self.captureRecorder = captureRecorder
@@ -94,9 +94,9 @@ public struct MuxIngressResponder: HTTPResponder, Sendable {
         response.setCookie(
           Cookie(
             name: cookieName,
-            value: resolved.binding.route,
+            value: resolved.binding.route.rawValue,
             path: "/",
-            secure: secureCookies,
+            secure: publicScheme == .https,
             httpOnly: true,
             sameSite: .lax
           )
@@ -142,129 +142,125 @@ public struct MuxIngressResponder: HTTPResponder, Sendable {
       forwardedPrefix: pathPolicy.forwardedPrefix(route: resolved.binding.route)
     )
 
-    let exchangeID = captureRecorder.map { _ in UUIDV7() }
-    if let captureRecorder, let exchangeID {
-      upstreamRequest.headers.add(name: "X-Tailreg-Request-ID", value: exchangeID.uuidString)
-      let facts = RequestFacts(
-        method: request.method.rawValue,
-        path: resolved.upstreamPath,
-        query: request.uri.query,
-        headers: request.headers
-      )
-      let classification = RequestClassifier.classify(facts)
-      captureRecorder.open(
-        HTTPExchangeRecord(
-          id: exchangeID,
-          routeID: resolved.binding.id,
-          method: request.method.rawValue,
-          host: request.head.authority,
-          path: resolved.isExplicit
-            ? pathPolicy.publicPath(
-              route: resolved.binding.route,
-              remainder: resolved.routeRelativePath
-            )
-            : request.uri.path,
-          query: request.uri.query,
-          requestHeaders: upstreamRequest.headers.map { header in
-            headerPolicy.capturedHeader(name: header.name.lowercased(), value: header.value)
-          },
-          startedAt: Date(),
-          tailscaleUserLogin: headerPolicy.requestHeader("tailscale-user-login", in: request),
-          tailscaleUserName: headerPolicy.requestHeader("tailscale-user-name", in: request)
-        ),
-        classification: classification.record(exchangeID: exchangeID),
-        refinementInput: classification.requestBodyDisposition == .provisional
-          || classification.responseBodyDisposition == .provisional
-          ? RequestRefinementInput(
-            exchangeID: exchangeID,
-            method: facts.method,
-            path: facts.path,
-            queryNames: facts.queryNames.sorted(),
-            headers: refinementHeaders(request.headers),
-            heuristicCategory: classification.category,
-            heuristicRuleID: classification.ruleID,
-            heuristicTags: classification.tags
-          )
-          : nil
-      )
-    }
+    let exchangeID = UUIDV7()
+    upstreamRequest.headers.add(name: "X-Tailreg-Request-ID", value: exchangeID.uuidString)
+    openCapture(
+      exchangeID: exchangeID,
+      request: request,
+      resolved: resolved,
+      requestHeaders: upstreamRequest.headers.map { header in
+        headerPolicy.capturedHeader(name: header.name.lowercased(), value: header.value)
+      }
+    )
 
     if request.method != .get && request.method != .head {
       let length: HTTPClientRequest.Body.Length =
         request.headers[.contentLength].flatMap { Int64($0) }.map { .known($0) } ?? .unknown
-      if let captureRecorder, let exchangeID {
-        upstreamRequest.body = .stream(
-          CapturingRequestBodySequence(
-            base: request.body,
-            capture: RequestBodyCapture(),
-            exchangeID: exchangeID,
-            contentType: request.headers[.contentType],
-            recorder: captureRecorder
-          ),
-          length: length
-        )
-      } else {
-        upstreamRequest.body = .stream(request.body, length: length)
-      }
+      upstreamRequest.body = .stream(
+        CapturingRequestBodySequence(
+          base: request.body,
+          capture: RequestBodyCapture(),
+          exchangeID: exchangeID,
+          contentType: request.headers[.contentType],
+          recorder: captureRecorder
+        ),
+        length: length
+      )
     }
 
     let upstreamResponse: HTTPClientResponse
     do {
-      upstreamResponse = try await HTTPClient.shared.execute(
+      upstreamResponse = try await UpstreamClient.shared.execute(
         upstreamRequest,
         timeout: .hours(24)
       )
     } catch {
-      if let captureRecorder, let exchangeID {
-        captureRecorder.responseStarted(
-          id: exchangeID,
-          at: Date(),
-          statusCode: Int(HTTPResponse.Status.badGateway.code),
-          headers: []
-        )
-        captureRecorder.complete(
-          id: exchangeID,
-          at: Date(),
-          outcome: .failed,
-          failure: "upstream_unavailable"
-        )
-      }
+      captureRecorder.responseStarted(
+        id: exchangeID,
+        at: Date(),
+        statusCode: Int(HTTPResponse.Status.badGateway.code),
+        headers: []
+      )
+      captureRecorder.complete(
+        id: exchangeID,
+        at: Date(),
+        outcome: .failed,
+        failure: "upstream_unavailable"
+      )
       throw error
     }
     let headers = headerPolicy.responseHeaders(from: upstreamResponse)
     let status = HTTPResponse.Status(code: Int(upstreamResponse.status.code))
-    if let captureRecorder, let exchangeID {
-      captureRecorder.responseStarted(
-        id: exchangeID,
-        at: Date(),
-        statusCode: Int(status.code),
-        headers: headerPolicy.capturedHeaders(headers)
-      )
-    }
+    captureRecorder.responseStarted(
+      id: exchangeID,
+      at: Date(),
+      statusCode: Int(status.code),
+      headers: headerPolicy.capturedHeaders(headers)
+    )
 
-    let body: ResponseBody
-    if let captureRecorder, let exchangeID {
-      body = capturedResponseBody(
-        upstreamResponse.body,
-        contentType: headers[.contentType],
-        exchangeID: exchangeID,
-        recorder: captureRecorder
-      )
-    } else {
-      body = ResponseBody(asyncSequence: upstreamResponse.body)
-    }
     return Response(
       status: status,
       headers: headers,
-      body: body
+      body: capturedResponseBody(
+        upstreamResponse.body,
+        contentType: headers[.contentType],
+        exchangeID: exchangeID
+      )
+    )
+  }
+
+  private func openCapture(
+    exchangeID: UUIDV7,
+    request: Request,
+    resolved: ResolvedMuxRoute,
+    requestHeaders: [CapturedHTTPHeader]
+  ) {
+    let facts = RequestFacts(
+      method: request.method.rawValue,
+      path: resolved.upstreamPath,
+      query: request.uri.query,
+      headers: request.headers
+    )
+    let classification = RequestClassifier.classify(facts)
+    captureRecorder.open(
+      HTTPExchangeRecord(
+        id: exchangeID,
+        routeID: resolved.binding.id,
+        method: request.method.rawValue,
+        host: request.head.authority,
+        path: resolved.isExplicit
+          ? pathPolicy.publicPath(
+            route: resolved.binding.route,
+            remainder: resolved.routeRelativePath
+          )
+          : request.uri.path,
+        query: request.uri.query,
+        requestHeaders: requestHeaders,
+        startedAt: Date(),
+        tailscaleUserLogin: headerPolicy.requestHeader("tailscale-user-login", in: request),
+        tailscaleUserName: headerPolicy.requestHeader("tailscale-user-name", in: request)
+      ),
+      classification: classification.record(exchangeID: exchangeID),
+      refinementInput: classification.requestBodyDisposition == .provisional
+        || classification.responseBodyDisposition == .provisional
+        ? RequestRefinementInput(
+          exchangeID: exchangeID,
+          method: facts.method,
+          path: facts.path,
+          queryNames: facts.queryNames.sorted(),
+          headers: refinementHeaders(request.headers),
+          heuristicCategory: classification.category,
+          heuristicRuleID: classification.ruleID,
+          heuristicTags: classification.tags
+        )
+        : nil
     )
   }
 
   private func capturedResponseBody(
     _ upstreamBody: HTTPClientResponse.Body,
     contentType: String?,
-    exchangeID: UUIDV7,
-    recorder: CaptureRecorder
+    exchangeID: UUIDV7
   ) -> ResponseBody {
     ResponseBody { writer in
       var capture = BodyCapture()
@@ -279,8 +275,7 @@ public struct MuxIngressResponder: HTTPResponder, Sendable {
             exchangeID: exchangeID,
             contentType: contentType,
             outcome: .failed,
-            failure: "response_stream_failed",
-            recorder: recorder
+            failure: "response_stream_failed"
           )
           throw error
         }
@@ -294,8 +289,7 @@ public struct MuxIngressResponder: HTTPResponder, Sendable {
             exchangeID: exchangeID,
             contentType: contentType,
             outcome: .cancelled,
-            failure: "client_disconnected",
-            recorder: recorder
+            failure: "client_disconnected"
           )
           throw error
         }
@@ -308,8 +302,7 @@ public struct MuxIngressResponder: HTTPResponder, Sendable {
           exchangeID: exchangeID,
           contentType: contentType,
           outcome: .cancelled,
-          failure: "client_disconnected",
-          recorder: recorder
+          failure: "client_disconnected"
         )
         throw error
       }
@@ -317,8 +310,7 @@ public struct MuxIngressResponder: HTTPResponder, Sendable {
         capture,
         exchangeID: exchangeID,
         contentType: contentType,
-        outcome: .complete,
-        recorder: recorder
+        outcome: .complete
       )
     }
   }
@@ -328,17 +320,16 @@ public struct MuxIngressResponder: HTTPResponder, Sendable {
     exchangeID: UUIDV7,
     contentType: String?,
     outcome: HTTPExchangeOutcome,
-    failure: String? = nil,
-    recorder: CaptureRecorder
+    failure: String? = nil
   ) {
-    recorder.store(
+    captureRecorder.store(
       capture.record(
         exchangeID: exchangeID,
         direction: .response,
         contentType: contentType
       )
     )
-    recorder.complete(
+    captureRecorder.complete(
       id: exchangeID,
       at: Date(),
       outcome: outcome,

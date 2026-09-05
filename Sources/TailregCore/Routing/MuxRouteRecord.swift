@@ -31,7 +31,7 @@ public struct MuxRouteRecord: Hashable, Sendable {
   public let id: UUIDV7
   public var muxID: UUIDV7
   public var name: String
-  public var route: String
+  public var route: MuxRouteName
   public var upstreamURL: String
   public var pathMode: MuxRoutePathMode
   public var createdAt: Date
@@ -41,7 +41,7 @@ public struct MuxRouteRecord: Hashable, Sendable {
     id: UUIDV7 = UUIDV7(),
     muxID: UUIDV7,
     name: String,
-    route: String,
+    route: MuxRouteName,
     upstreamURL: String,
     pathMode: MuxRoutePathMode = .stripRoutePrefix,
     createdAt: Date,
@@ -64,7 +64,7 @@ public struct MuxRouteRecord: Hashable, Sendable {
       .order { ($0.route, $0.createdAt) }
   }
 
-  public static func live(muxID: UUIDV7, route: String) -> Where<MuxRouteRecord> {
+  public static func live(muxID: UUIDV7, route: MuxRouteName) -> Where<MuxRouteRecord> {
     MuxRouteRecord.where { $0.muxID.eq(muxID) && $0.route.eq(route) && $0.endedAt.is(nil) }
   }
 }

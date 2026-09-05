@@ -9,8 +9,16 @@ struct MuxHeaderPolicy: Sendable {
     "transfer-encoding", "upgrade"
   ]
 
+  /// Dropped from the forwarded request alongside the hop-by-hop headers.
+  ///
+  /// `host` belongs to the hop the MUX is ending. `accept-encoding` is removed so upstreams
+  /// answer with identity encoding: captures stay readable, and because the response is then
+  /// passed through untouched the client sees exactly the bytes and the encoding headers the
+  /// upstream sent.
+  private static let endOfHopRequestHeaders: Set<String> = ["accept-encoding", "host"]
+
   let cookieName: String
-  let secureCookies: Bool
+  let publicScheme: PublicScheme
   let capturedHeaderPolicy: CapturedHeaderPolicy
 
   func requestHeader(_ name: String, in request: Request) -> String? {
@@ -35,7 +43,8 @@ struct MuxHeaderPolicy: Sendable {
     let connectionHeaders = connectionTokens(request.headers[values: .connection])
     for field in request.headers {
       let name = field.name.canonicalName
-      guard !Self.hopByHopHeaders.contains(name), !connectionHeaders.contains(name), name != "host"
+      guard !Self.hopByHopHeaders.contains(name), !connectionHeaders.contains(name),
+        !Self.endOfHopRequestHeaders.contains(name)
       else { continue }
 
       if name == "cookie" {
@@ -46,27 +55,26 @@ struct MuxHeaderPolicy: Sendable {
       }
     }
 
+    // Replaced rather than appended: Tailscale serve already sets some of these, and an upstream
+    // reading the first or the last value must not be able to see a client-supplied one.
     if let host = request.head.authority {
-      upstreamRequest.headers.add(name: "X-Forwarded-Host", value: host)
+      upstreamRequest.headers.replaceOrAdd(name: "X-Forwarded-Host", value: host)
     }
-    upstreamRequest.headers.add(name: "X-Forwarded-Proto", value: secureCookies ? "https" : "http")
-    upstreamRequest.headers.add(name: "X-Forwarded-Prefix", value: forwardedPrefix)
+    upstreamRequest.headers.replaceOrAdd(
+      name: "X-Forwarded-Proto",
+      value: publicScheme.rawValue
+    )
+    upstreamRequest.headers.replaceOrAdd(name: "X-Forwarded-Prefix", value: forwardedPrefix)
   }
 
   func responseHeaders(from response: HTTPClientResponse) -> HTTPFields {
     let connectionHeaders = connectionTokens(response.headers["connection"])
-    // HTTPClient.shared decodes these bodies but preserves the upstream metadata.
-    let bodyWasDecoded = response.headers["content-encoding"]
-      .contains {
-        $0.lowercased() == "gzip" || $0.lowercased() == "deflate"
-      }
     var headers = HTTPFields()
     for header in response.headers {
       let name = header.name.lowercased()
       guard !Self.hopByHopHeaders.contains(name), !connectionHeaders.contains(name) else {
         continue
       }
-      if bodyWasDecoded && (name == "content-encoding" || name == "content-length") { continue }
       if name == "set-cookie" && header.value.lowercased().hasPrefix("\(cookieName.lowercased())=")
       {
         continue

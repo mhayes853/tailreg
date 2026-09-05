@@ -7,19 +7,9 @@ import UUIDV7
 public final class CaptureRecorder: Sendable {
   private enum Event: Sendable {
     case opened(OpenedEvent)
-    case responseStarted(
-      id: UUIDV7,
-      at: Date,
-      statusCode: Int,
-      headers: [CapturedHTTPHeader]
-    )
+    case responseStarted(ResponseStartedEvent)
     case body(HTTPExchangeBodyRecord)
-    case completed(
-      id: UUIDV7,
-      at: Date,
-      outcome: HTTPExchangeOutcome,
-      failure: String?
-    )
+    case completed(CompletedEvent)
     case abandon(Date)
     case flush(CheckedContinuation<Void, Never>)
   }
@@ -30,14 +20,14 @@ public final class CaptureRecorder: Sendable {
     let refinementInput: RequestRefinementInput?
   }
 
-  private struct ResponseStartedEvent {
+  private struct ResponseStartedEvent: Sendable {
     let id: UUIDV7
     let at: Date
     let statusCode: Int
     let headers: [CapturedHTTPHeader]
   }
 
-  private struct CompletedEvent {
+  private struct CompletedEvent: Sendable {
     let id: UUIDV7
     let at: Date
     let outcome: HTTPExchangeOutcome
@@ -58,16 +48,12 @@ public final class CaptureRecorder: Sendable {
           abandonedAt = at
         case .opened(let event):
           opened.append(event)
-        case .responseStarted(let id, let at, let statusCode, let headers):
-          responsesStarted.append(
-            ResponseStartedEvent(id: id, at: at, statusCode: statusCode, headers: headers)
-          )
+        case .responseStarted(let event):
+          responsesStarted.append(event)
         case .body(let body):
           bodies.append(body)
-        case .completed(let id, let at, let outcome, let failure):
-          completed.append(
-            CompletedEvent(id: id, at: at, outcome: outcome, failure: failure)
-          )
+        case .completed(let event):
+          completed.append(event)
         case .flush:
           break
         }
@@ -152,8 +138,8 @@ public final class CaptureRecorder: Sendable {
             input.bodyByteCount = body.observedByteCount
             input.bodyPreview = Self.bodyPreview(body)
             pendingRefinements[body.exchangeID] = input
-          case .completed(let id, _, _, _):
-            guard let input = pendingRefinements.removeValue(forKey: id) else { continue }
+          case .completed(let event):
+            guard let input = pendingRefinements.removeValue(forKey: event.id) else { continue }
             refinementPipeline?.0.yield(input)
           case .abandon:
             pendingRefinements.removeAll()
@@ -188,7 +174,9 @@ public final class CaptureRecorder: Sendable {
     headers: [CapturedHTTPHeader]
   ) {
     continuation.yield(
-      .responseStarted(id: id, at: at, statusCode: statusCode, headers: headers)
+      .responseStarted(
+        ResponseStartedEvent(id: id, at: at, statusCode: statusCode, headers: headers)
+      )
     )
   }
 
@@ -202,7 +190,9 @@ public final class CaptureRecorder: Sendable {
     outcome: HTTPExchangeOutcome,
     failure: String? = nil
   ) {
-    continuation.yield(.completed(id: id, at: at, outcome: outcome, failure: failure))
+    continuation.yield(
+      .completed(CompletedEvent(id: id, at: at, outcome: outcome, failure: failure))
+    )
   }
 
   public func flush() async {

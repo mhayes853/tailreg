@@ -27,14 +27,11 @@ struct MuxRunCommand: AsyncParsableCommand {
     let database = try openTailregDatabase(path: databasePath)
     let multiplexer = Multiplexer(
       configuration: Multiplexer.Configuration(
-        adminPort: adminPort.intValue,
+        adminPort: adminPort,
         id: id,
-        ingressPort: ingressPort.intValue,
+        ingressPort: ingressPort,
         unmatchedPathPolicy: .lastSelectedRouteCompatibility,
-        routingCookieName: insecureCookies
-          ? "tailreg-route-\(id.uuidString.lowercased())"
-          : nil,
-        secureCookies: !insecureCookies
+        publicScheme: insecureCookies ? .http : .https
       ),
       database: database
     )

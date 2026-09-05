@@ -40,7 +40,7 @@ struct MuxAdminClient: Sendable {
     )
   }
 
-  func update(route: String, upstream: URL, pathMode: MuxRoutePathMode) async throws
+  func update(route: MuxRouteName, upstream: URL, pathMode: MuxRoutePathMode) async throws
     -> MuxRouteResponse
   {
     try await request(
@@ -53,7 +53,7 @@ struct MuxAdminClient: Sendable {
     )
   }
 
-  func remove(route: String) async throws {
+  func remove(route: MuxRouteName) async throws {
     _ = try await data(path: "/routes/\(route)", method: "DELETE", statuses: [204, 404])
   }
 

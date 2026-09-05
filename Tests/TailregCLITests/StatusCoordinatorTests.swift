@@ -321,7 +321,7 @@ struct `Status coordinator tests` {
       let record = MuxRouteRecord(
         muxID: project.muxID,
         name: route,
-        route: route,
+        route: MuxRouteName(rawValue: route)!,
         upstreamURL: "http://127.0.0.1:\(port)",
         createdAt: Date()
       )
