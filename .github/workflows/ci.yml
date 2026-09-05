@@ -46,34 +46,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-spm-test-
       - name: Run tests
-        if: runner.os == 'Linux'
         run: swift test --disable-experimental-prebuilts
-      # The macOS runner has stalled mid-run with nothing in the log to name the culprit, and
-      # block-buffered output hides the ordering. A pty keeps the output live, and the watchdog
-      # samples the stuck test process so the stall names itself.
-      - name: Run tests (macOS, with stall diagnostics)
-        if: runner.os == 'macOS'
-        run: |
-          set -o pipefail
-          (
-            for tick in 1 2 3 4 5 6 7 8 9 10; do
-              sleep 90
-              pids=$(pgrep -f 'TailregPackageTests\.xctest' || true)
-              [ -z "$pids" ] && continue
-              echo "===== watchdog tick $tick ====="
-              ps -Ao pid,ppid,stat,etime,command | grep -E 'xctest|tailreg|sleep ' | grep -v grep || true
-              for pid in $pids; do
-                echo "----- sample $pid -----"
-                sample "$pid" 2 -mayDie -file /dev/stdout 2>&1 || true
-              done
-            done
-          ) &
-          watchdog=$!
-          trap 'kill "$watchdog" 2>/dev/null || true' EXIT
-          # `script` does not reliably forward the child's status, so carry it out by hand.
-          script -q /dev/null \
-            bash -c 'swift test --disable-experimental-prebuilts; echo "$?" > /tmp/test-status'
-          exit "$(cat /tmp/test-status)"
 
   browser-test:
     runs-on: ubuntu-latest

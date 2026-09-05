@@ -131,8 +131,11 @@ public struct ResolvedProject: Sendable {
       ) {
         return candidate
       }
-      let parent = candidate.deletingLastPathComponent()
-      if parent.path == candidate.path { return nil }
+      // Darwin walks *past* the root by appending "..", so the parent never repeats itself and
+      // the walk would run forever, building a longer path every time. The root is the stop.
+      guard candidate.path != "/" else { return nil }
+      let parent = candidate.deletingLastPathComponent().standardizedFileURL
+      guard parent.path != candidate.path else { return nil }
       candidate = parent
     }
   }
