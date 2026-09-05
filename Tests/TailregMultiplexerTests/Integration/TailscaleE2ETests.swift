@@ -126,10 +126,10 @@ struct `MUX Tailscale E2E tests` {
   }
 
   private func waitForFixture() async throws {
-    let statusURL = URL(string: "http://127.0.0.1:\(Self.ingressPort)/_tailreg/status")!
+    let statusURL = URL(string: "http://127.0.0.1:\(Self.ingressPort)/__fixture_ready__")!
     for _ in 0..<100 {
       if let (_, response) = try? await URLSession.shared.data(from: statusURL),
-        (response as? HTTPURLResponse)?.statusCode == 200
+        (response as? HTTPURLResponse)?.statusCode == 404
       {
         return
       }

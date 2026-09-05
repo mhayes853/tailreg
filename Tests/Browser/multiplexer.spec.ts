@@ -21,6 +21,28 @@ type CapturedExchange = {
   statusCode?: number;
 };
 
+test("a separate frontend and backend interact through one project MUX", async ({
+  page,
+}) => {
+  const response = await page.goto("/web/");
+
+  expect(response?.status()).toBe(200);
+  await expect(page.getByRole("heading", { name: "Storefront" })).toBeVisible();
+  await expect(page.getByTestId("products")).toHaveText("Keyboard, Monitor");
+  await expect(page.locator("body")).toHaveAttribute("data-assets", "loaded");
+
+  await expect
+    .poll(async () => {
+      return (await captures(page.request, "api")).some(
+        (exchange) =>
+          exchange.path.endsWith("/products") &&
+          exchange.statusCode === 200 &&
+          exchange.classification?.category === "api",
+      );
+    })
+    .toBe(true);
+});
+
 async function captures(
   request: APIRequestContext,
   route: string,

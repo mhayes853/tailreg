@@ -8,11 +8,18 @@ public struct ProcessCommand: Sendable, Equatable {
   public var executable: String
   public var arguments: [String]
   public var workingDirectory: URL?
+  public var environment: [String: String]
 
-  public init(executable: String, arguments: [String] = [], workingDirectory: URL? = nil) {
+  public init(
+    executable: String,
+    arguments: [String] = [],
+    workingDirectory: URL? = nil,
+    environment: [String: String] = [:]
+  ) {
     self.executable = executable
     self.arguments = arguments
     self.workingDirectory = workingDirectory
+    self.environment = environment
   }
 
   /// Parses command text into an argv command without invoking shell syntax.
@@ -27,7 +34,8 @@ public struct ProcessCommand: Sendable, Equatable {
     self.init(
       executable: executable,
       arguments: Array(words.dropFirst()),
-      workingDirectory: workingDirectory
+      workingDirectory: workingDirectory,
+      environment: [:]
     )
   }
 }

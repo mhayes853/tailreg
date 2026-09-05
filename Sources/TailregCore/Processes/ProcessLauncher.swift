@@ -1,4 +1,3 @@
-import Dispatch
 import Foundation
 import Synchronization
 
@@ -39,16 +38,21 @@ public final class LaunchedProcess: Sendable {
   public let standardError: AsyncStream<LogLine>
 
   private let state: ProcessLaunchState
+  /// Kept only so the `Process` outlives the child it is waiting on, and with it the termination
+  /// handler that reports the exit.
+  private let process: Process
 
   fileprivate init(
     pid: Int32,
     standardOutput: AsyncStream<LogLine>,
     standardError: AsyncStream<LogLine>,
+    process: Process,
     state: ProcessLaunchState
   ) {
     self.pid = pid
     self.standardOutput = standardOutput
     self.standardError = standardError
+    self.process = process
     self.state = state
   }
 
@@ -56,12 +60,31 @@ public final class LaunchedProcess: Sendable {
     await state.waitForExit()
   }
 
+  /// Whether the child has exited *and* been reaped.
+  ///
+  /// This is set by the launcher's own waiter, so it never reports a zombie as running the way a
+  /// `kill(pid, 0)` probe would. Callers polling for an owned child's exit should prefer it.
+  public var hasExited: Bool { state.hasExited }
+
   /// Forcefully stops the direct child process.
   ///
   /// This intentionally does not attempt to signal a process tree. Process-group supervision is
   /// a higher-level policy and is not implied by this generic launcher.
   public func terminate() {
     state.forceTerminate(pid: pid)
+  }
+
+  /// Requests termination of a process group whose leader is this child.
+  ///
+  /// The caller is responsible for launching the child as a process-group leader. This is kept
+  /// separate from `terminate()` so generic process launches never signal unrelated descendants.
+  public func terminateProcessGroup() {
+    state.signalProcessGroup(pid: pid, signal: SIGTERM)
+  }
+
+  /// Forcefully stops a process group whose leader is this child.
+  public func forceTerminateProcessGroup() {
+    state.signalProcessGroup(pid: pid, signal: SIGKILL)
   }
 }
 
@@ -89,12 +112,32 @@ public struct SystemProcessLauncher: ProcessLaunching {
     process.standardOutput = standardOutput
     process.standardError = standardError
     process.currentDirectoryURL = command.workingDirectory
+    if !command.environment.isEmpty {
+      process.environment = ProcessInfo.processInfo.environment.merging(command.environment) {
+        _,
+        configured in
+        configured
+      }
+    }
 
-    let state = ProcessLaunchState(process: process)
+    let state = ProcessLaunchState()
+    // Installed before the launch: a short-lived child can be reaped before `run()` returns, and
+    // a handler set afterwards would never be called. The handler holds only the state, and the
+    // returned `LaunchedProcess` holds the `Process`, so nothing here is a cycle and the handler
+    // never has to reach back into the process that is calling it.
+    process.terminationHandler = { finished in
+      state.complete(
+        with: ProcessExit(
+          code: finished.terminationStatus,
+          wasTerminatedBySignal: finished.terminationReason == .uncaughtSignal
+        )
+      )
+    }
 
     do {
-      try process.run()
+      try withDefaultSignalMaskForSpawn { try process.run() }
     } catch {
+      process.terminationHandler = nil
       try? standardOutput.fileHandleForReading.close()
       try? standardError.fileHandleForReading.close()
       throw ProcessLaunchError.launchFailed(
@@ -102,12 +145,12 @@ public struct SystemProcessLauncher: ProcessLaunching {
         message: String(describing: error)
       )
     }
-    state.beginWaiting()
 
     return LaunchedProcess(
       pid: process.processIdentifier,
       standardOutput: output,
       standardError: error,
+      process: process,
       state: state
     )
   }
@@ -141,12 +184,9 @@ private final class ProcessLaunchState: Sendable {
     var waiters: [CheckedContinuation<ProcessExit, Never>] = []
   }
 
-  private let process: Mutex<Process>
   private let storage = Mutex(Storage())
 
-  init(process: Process) {
-    self.process = Mutex(process)
-  }
+  var hasExited: Bool { storage.withLock { $0.exit != nil } }
 
   func waitForExit() async -> ProcessExit {
     await withCheckedContinuation { continuation in
@@ -160,24 +200,21 @@ private final class ProcessLaunchState: Sendable {
     }
   }
 
-  func beginWaiting() {
-    processLifecycleQueue.async { [self] in
-      let exit = process.withLock {
-        $0.waitUntilExit()
-        return ProcessExit(
-          code: $0.terminationStatus,
-          wasTerminatedBySignal: $0.terminationReason == .uncaughtSignal
-        )
-      }
-      let waiters = storage.withLock { storage -> [CheckedContinuation<ProcessExit, Never>] in
-        guard storage.exit == nil else { return [] }
-        storage.exit = exit
-        defer { storage.waiters.removeAll() }
-        return storage.waiters
-      }
-      for waiter in waiters {
-        waiter.resume(returning: exit)
-      }
+  /// Publishes the exit that `Process` reported once it had reaped the child.
+  ///
+  /// Deliberately not `waitUntilExit()`: on Linux that spins the calling thread's run loop, and a
+  /// run loop with no sources returns immediately, so waiting for a child burns a whole core for
+  /// as long as the child lives. A handful of concurrent children is enough to starve the
+  /// cooperative pool and stall every unrelated task in the process.
+  func complete(with exit: ProcessExit) {
+    let waiters = storage.withLock { storage -> [CheckedContinuation<ProcessExit, Never>] in
+      guard storage.exit == nil else { return [] }
+      storage.exit = exit
+      defer { storage.waiters.removeAll() }
+      return storage.waiters
+    }
+    for waiter in waiters {
+      waiter.resume(returning: exit)
     }
   }
 
@@ -187,9 +224,11 @@ private final class ProcessLaunchState: Sendable {
       _ = kill(pid, SIGKILL)
     }
   }
-}
 
-private let processLifecycleQueue = DispatchQueue(
-  label: "com.tailreg.io.process-launcher.lifecycle",
-  attributes: .concurrent
-)
+  func signalProcessGroup(pid: Int32, signal: Int32) {
+    let exited = storage.withLock { $0.exit != nil }
+    if !exited {
+      _ = kill(-pid, signal)
+    }
+  }
+}

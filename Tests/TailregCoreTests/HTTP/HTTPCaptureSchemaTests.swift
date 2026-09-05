@@ -11,14 +11,31 @@ struct `HTTP capture schema tests` {
     try openTailregDatabase(path: temp.path("tailreg.sqlite"), kind: .queue)
   }
 
+  private func route(
+    name: String,
+    route: String,
+    createdAt: Date = Date()
+  ) -> (MuxInstanceRecord, MuxRouteRecord) {
+    let mux = MuxInstanceRecord()
+    return (
+      mux,
+      MuxRouteRecord(
+        muxID: mux.id,
+        name: name,
+        route: route,
+        upstreamURL: "http://127.0.0.1:3000",
+        createdAt: createdAt
+      )
+    )
+  }
+
   @Test
   func `Round trips an exchange with duplicate headers and bodies`() async throws {
     let temp = try TempDirectory()
     let database = try database(temp)
-    let route = MuxRouteRecord(
+    let (mux, route) = route(
       name: "web",
       route: "web-0",
-      upstreamURL: "http://127.0.0.1:3000",
       createdAt: Date(timeIntervalSince1970: 1_700_000_000)
     )
     let exchange = HTTPExchangeRecord(
@@ -57,6 +74,7 @@ struct `HTTP capture schema tests` {
     )
 
     try await database.write { db in
+      try MuxInstanceRecord.insert { mux }.execute(db)
       try MuxRouteRecord.insert { route }.execute(db)
       try HTTPExchangeRecord.insert { exchange }.execute(db)
       try HTTPExchangeBodyRecord.insert { [requestBody, responseBody] }.execute(db)
@@ -79,12 +97,7 @@ struct `HTTP capture schema tests` {
   func `Stores an omitted marker without a partial body`() async throws {
     let temp = try TempDirectory()
     let database = try database(temp)
-    let route = MuxRouteRecord(
-      name: "download",
-      route: "download-0",
-      upstreamURL: "http://127.0.0.1:3000",
-      createdAt: Date()
-    )
+    let (mux, route) = route(name: "download", route: "download-0")
     let exchange = HTTPExchangeRecord(
       routeID: route.id,
       method: "GET",
@@ -103,6 +116,7 @@ struct `HTTP capture schema tests` {
     )
 
     try await database.write { db in
+      try MuxInstanceRecord.insert { mux }.execute(db)
       try MuxRouteRecord.insert { route }.execute(db)
       try HTTPExchangeRecord.insert { exchange }.execute(db)
       try HTTPExchangeBodyRecord.insert { body }.execute(db)
@@ -118,12 +132,7 @@ struct `HTTP capture schema tests` {
   func `Round trips a classification with multiple and unknown tags`() async throws {
     let temp = try TempDirectory()
     let database = try database(temp)
-    let route = MuxRouteRecord(
-      name: "web",
-      route: "web-0",
-      upstreamURL: "http://127.0.0.1:3000",
-      createdAt: Date()
-    )
+    let (mux, route) = route(name: "web", route: "web-0")
     let exchange = HTTPExchangeRecord(
       routeID: route.id,
       method: "POST",
@@ -143,6 +152,7 @@ struct `HTTP capture schema tests` {
     )
 
     try await database.write { db in
+      try MuxInstanceRecord.insert { mux }.execute(db)
       try MuxRouteRecord.insert { route }.execute(db)
       try HTTPExchangeRecord.insert { exchange }.execute(db)
       try HTTPExchangeClassificationRecord.insert { classification }.execute(db)
@@ -160,12 +170,7 @@ struct `HTTP capture schema tests` {
   func `Deleting a route removes its exchanges and bodies`() async throws {
     let temp = try TempDirectory()
     let database = try database(temp)
-    let route = MuxRouteRecord(
-      name: "web",
-      route: "web-0",
-      upstreamURL: "http://127.0.0.1:3000",
-      createdAt: Date()
-    )
+    let (mux, route) = route(name: "web", route: "web-0")
     let exchange = HTTPExchangeRecord(
       routeID: route.id,
       method: "GET",
@@ -199,6 +204,7 @@ struct `HTTP capture schema tests` {
     )
 
     try await database.write { db in
+      try MuxInstanceRecord.insert { mux }.execute(db)
       try MuxRouteRecord.insert { route }.execute(db)
       try HTTPExchangeRecord.insert { exchange }.execute(db)
       try HTTPExchangeBodyRecord.insert { body }.execute(db)
@@ -225,12 +231,7 @@ struct `HTTP capture schema tests` {
   func `Pruning exchanges also removes their bodies`() async throws {
     let temp = try TempDirectory()
     let database = try database(temp)
-    let route = MuxRouteRecord(
-      name: "web",
-      route: "web-0",
-      upstreamURL: "http://127.0.0.1:3000",
-      createdAt: Date()
-    )
+    let (mux, route) = route(name: "web", route: "web-0")
     let exchanges = (0..<3)
       .map { index in
         HTTPExchangeRecord(
@@ -254,6 +255,7 @@ struct `HTTP capture schema tests` {
     }
 
     try await database.write { db in
+      try MuxInstanceRecord.insert { mux }.execute(db)
       try MuxRouteRecord.insert { route }.execute(db)
       try HTTPExchangeRecord.insert { exchanges }.execute(db)
       try HTTPExchangeBodyRecord.insert { bodies }.execute(db)

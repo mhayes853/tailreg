@@ -78,3 +78,17 @@ extension PortNumber {
     try container.encode(rawValue)
   }
 }
+
+// MARK: - URLs
+
+extension URL {
+  /// The port a request to this URL would reach: the explicit one, else the scheme's default.
+  public var listenerPort: PortNumber? {
+    if let explicit = port { return PortNumber(explicit) }
+    switch scheme {
+    case "http": return PortNumber(80)
+    case "https": return PortNumber(443)
+    default: return nil
+    }
+  }
+}

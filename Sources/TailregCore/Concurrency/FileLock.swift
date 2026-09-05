@@ -6,8 +6,8 @@ import Foundation
   import Glibc
 #endif
 
-struct FileLock: Sendable {
-  enum Mode {
+public struct FileLock: Sendable {
+  public enum Mode {
     case shared
     case exclusive
 
@@ -19,15 +19,15 @@ struct FileLock: Sendable {
     }
   }
 
-  let path: String
-  var timeout: Duration = .seconds(10)
-  var pollInterval: Duration = .milliseconds(25)
+  public let path: String
+  public var timeout: Duration = .seconds(10)
+  public var pollInterval: Duration = .milliseconds(25)
 
-  init(path: String) {
+  public init(path: String) {
     self.path = path
   }
 
-  func withLock<T>(
+  public func withLock<T>(
     _ mode: Mode,
     isolation: isolated (any Actor)? = #isolation,
     _ operation: () async throws -> T

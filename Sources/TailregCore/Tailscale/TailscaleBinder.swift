@@ -85,6 +85,16 @@ public actor TailscaleBinder {
     }
   }
 
+  /// Removes one mount, leaving anything else served on the same tailnet port alone.
+  @discardableResult
+  public func unbind(tailnetPort: Int, mountPath: String) async throws -> [TailscaleBinding] {
+    try await gate.withGate {
+      try await self.fileLock.withLock(.exclusive) {
+        try await self.performRemove { $0.tailnetPort == tailnetPort && $0.mountPath == mountPath }
+      }
+    }
+  }
+
   @discardableResult
   public func unbind(localPort: Int) async throws -> [TailscaleBinding] {
     try await gate.withGate {

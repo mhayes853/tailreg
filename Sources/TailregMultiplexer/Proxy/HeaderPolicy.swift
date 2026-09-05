@@ -30,7 +30,7 @@ struct MuxHeaderPolicy: Sendable {
   func copyRequestHeaders(
     from request: Request,
     to upstreamRequest: inout HTTPClientRequest,
-    route: String
+    forwardedPrefix: String
   ) {
     let connectionHeaders = connectionTokens(request.headers[values: .connection])
     for field in request.headers {
@@ -50,7 +50,7 @@ struct MuxHeaderPolicy: Sendable {
       upstreamRequest.headers.add(name: "X-Forwarded-Host", value: host)
     }
     upstreamRequest.headers.add(name: "X-Forwarded-Proto", value: secureCookies ? "https" : "http")
-    upstreamRequest.headers.add(name: "X-Forwarded-Prefix", value: "/\(route)")
+    upstreamRequest.headers.add(name: "X-Forwarded-Prefix", value: forwardedPrefix)
   }
 
   func responseHeaders(from response: HTTPClientResponse) -> HTTPFields {

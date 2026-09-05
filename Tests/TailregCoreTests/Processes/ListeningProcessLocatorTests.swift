@@ -1,3 +1,4 @@
+import Dispatch
 import Foundation
 import TailregCore
 import Testing
@@ -139,7 +140,12 @@ struct `SystemListeningProcessLocator tests` {
     let listener = try LoopbackListener()
     defer { listener.stop() }
 
-    let churn = Task.detached {
+    // On its own thread rather than a task: `waitUntilExit()` parks the thread it is called on,
+    // and taking one of the cooperative pool's few threads hostage for the whole churn starves
+    // every other test sharing this process.
+    let churn = DispatchGroup()
+    churn.enter()
+    Thread.detachNewThread {
       for _ in 0..<30 {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sleep")
@@ -147,13 +153,20 @@ struct `SystemListeningProcessLocator tests` {
         try? process.run()
         process.waitUntilExit()
       }
+      churn.leave()
     }
-    defer { churn.cancel() }
 
+    // The claim is that a process table changing underneath the scan does not break it: it keeps
+    // reporting this listener and never throws. Whether a child that was spawning at that instant
+    // is also on the list is not what this test is about, so the whole list is reported instead of
+    // being asserted exactly.
     for _ in 0..<10 {
-      #expect(try await locator.processes(listeningOn: listener.port).map(\.pid) == [getpid()])
+      let found = try await locator.processes(listeningOn: listener.port)
+      #expect(found.map(\.pid).contains(getpid()), "scan reported \(found)")
     }
-    await churn.value
+    await withCheckedContinuation { continuation in
+      churn.notify(queue: .global()) { continuation.resume() }
+    }
   }
 
   // MARK: - Helpers

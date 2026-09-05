@@ -27,12 +27,12 @@ enum TailregMultiplexerE2EFixture {
     let multiplexer = Multiplexer(
       configuration: Multiplexer.Configuration(
         ingressPort: ingressPort,
+        unmatchedPathPolicy: .lastSelectedRouteCompatibility,
         routingCookieName: routingCookieName,
         secureCookies: secureCookies
       ),
       database: database
     )
-    let registry = multiplexer.registry
     for (name, port, route) in [
       ("web", firstUpstreamPort, "web-0"),
       ("web", secondUpstreamPort, "web-1"),
@@ -42,12 +42,24 @@ enum TailregMultiplexerE2EFixture {
       ("astro", astroUpstreamPort, "astro-0"),
       ("tanstack-start", tanStackStartUpstreamPort, "tanstack-start-0")
     ] {
-      let binding = try await registry.register(
+      let binding = try await multiplexer.registerRoute(
         name: name,
         upstream: URL(string: "http://127.0.0.1:\(port)")!
       )
       precondition(binding.route == route)
     }
+    let fullStackFrontend = try await multiplexer.registerRoute(
+      name: "Storefront",
+      route: "web",
+      upstream: URL(string: "http://127.0.0.1:19109")!
+    )
+    let fullStackBackend = try await multiplexer.registerRoute(
+      name: "Storefront API",
+      route: "api",
+      upstream: URL(string: "http://127.0.0.1:19110")!
+    )
+    precondition(fullStackFrontend.route == "web")
+    precondition(fullStackBackend.route == "api")
 
     guard let captureRecorder = multiplexer.captureRecorder else {
       preconditionFailure("The E2E fixture requires capture storage")
@@ -60,7 +72,10 @@ enum TailregMultiplexerE2EFixture {
 
     let ingress = Application(
       responder: MuxIngressResponder(
-        registry: registry,
+        database: database,
+        muxID: multiplexer.configuration.id,
+        pathPolicy: multiplexer.configuration.pathPolicy,
+        unmatchedPathPolicy: multiplexer.configuration.unmatchedPathPolicy,
         cookieName: multiplexer.configuration.routingCookieName,
         secureCookies: multiplexer.configuration.secureCookies,
         capturedHeaderPolicy: multiplexer.configuration.capturedHeaderPolicy,

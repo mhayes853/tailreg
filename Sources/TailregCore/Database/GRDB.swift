@@ -8,6 +8,9 @@ extension TailscaleBindingEndReason: QueryBindable, QueryDecodable {}
 extension ProcessStream: QueryBindable, QueryDecodable {}
 extension HTTPExchangeOutcome: QueryBindable, QueryDecodable {}
 extension HTTPExchangeBodyDirection: QueryBindable, QueryDecodable {}
+extension MuxRoutePathMode: QueryBindable, QueryDecodable {}
+extension ApplicationOwnership: QueryBindable, QueryDecodable {}
+extension ProjectExposure: QueryBindable, QueryDecodable {}
 
 @Table("bindings")
 public struct TailscaleBindingRecord: Hashable, Sendable {
@@ -47,6 +50,16 @@ public struct TailscaleBindingRecord: Hashable, Sendable {
   }
 
   public var isLive: Bool { endedAt == nil }
+
+  /// The URL this binding was recorded as serving.
+  public var url: URL? {
+    tailscaleURL(
+      hostname: hostname,
+      tailnetPort: tailnetPort,
+      proto: proto,
+      mountPath: mountPath
+    )
+  }
 
   func claims(_ binding: TailscaleBinding) -> Bool {
     binding.tailnetPort == tailnetPort
@@ -103,30 +116,194 @@ public struct CapturedHTTPHeader: Codable, Equatable, Hashable, Sendable {
   }
 }
 
-@Table("muxRoutes")
-public struct MuxRouteRecord: Hashable, Sendable {
+public enum MuxRoutePathMode: String, Codable, Equatable, Sendable {
+  case stripRoutePrefix = "strip-route-prefix"
+  case preserveRoutePrefix = "preserve-route-prefix"
+}
+
+@Table("muxInstances")
+public struct MuxInstanceRecord: Hashable, Sendable {
   public let id: UUIDV7
-  public var name: String
-  public var route: String
-  public var upstreamURL: String
   public var createdAt: Date
   public var endedAt: Date?
 
   public init(
     id: UUIDV7 = UUIDV7(),
+    createdAt: Date = Date(),
+    endedAt: Date? = nil
+  ) {
+    self.id = id
+    self.createdAt = createdAt
+    self.endedAt = endedAt
+  }
+}
+
+@Table("muxRoutes")
+public struct MuxRouteRecord: Hashable, Sendable {
+  public let id: UUIDV7
+  public var muxID: UUIDV7
+  public var name: String
+  public var route: String
+  public var upstreamURL: String
+  public var pathMode: MuxRoutePathMode
+  public var createdAt: Date
+  public var endedAt: Date?
+
+  public init(
+    id: UUIDV7 = UUIDV7(),
+    muxID: UUIDV7,
     name: String,
     route: String,
     upstreamURL: String,
+    pathMode: MuxRoutePathMode = .stripRoutePrefix,
     createdAt: Date,
     endedAt: Date? = nil
   ) {
     self.id = id
+    self.muxID = muxID
     self.name = name
     self.route = route
     self.upstreamURL = upstreamURL
+    self.pathMode = pathMode
     self.createdAt = createdAt
     self.endedAt = endedAt
   }
+}
+
+@Table("projects")
+public struct ProjectRecord: Hashable, Sendable {
+  public let id: UUIDV7
+  public var rootPath: String
+  public var name: String
+  public var muxID: UUIDV7
+  public var createdAt: Date
+
+  public init(
+    id: UUIDV7 = UUIDV7(),
+    rootPath: String,
+    name: String,
+    muxID: UUIDV7 = UUIDV7(),
+    createdAt: Date = Date()
+  ) {
+    self.id = id
+    self.rootPath = rootPath
+    self.name = name
+    self.muxID = muxID
+    self.createdAt = createdAt
+  }
+}
+
+/// How a project runtime was published.
+///
+/// This is recorded rather than inferred from whether a binding exists. The two states are
+/// otherwise indistinguishable after the fact, and a binding that has gone missing is exactly
+/// the fault an observing command needs to be able to name.
+public enum ProjectExposure: String, Codable, Equatable, Sendable {
+  /// Reachable on the tailnet through a root Tailscale binding.
+  case tailnet
+  /// Reachable only on the MUX's loopback listener.
+  case local
+}
+
+@Table("muxRuns")
+public struct MuxRunRecord: Hashable, Sendable {
+  public let id: UUIDV7
+  public var projectID: UUIDV7
+  public var pid: Int
+  /// Identifies the process behind `pid`, so a recycled PID is never mistaken for this MUX.
+  /// Nil when the start time could not be read, which leaves the run unverifiable rather than
+  /// assumed live.
+  public var processStartedAt: Int64?
+  public var ingressPort: Int
+  public var adminPort: Int
+  public var exposure: ProjectExposure
+  public var createdAt: Date
+  public var endedAt: Date?
+
+  public init(
+    id: UUIDV7 = UUIDV7(),
+    projectID: UUIDV7,
+    pid: Int,
+    processStartedAt: Int64? = nil,
+    ingressPort: Int,
+    adminPort: Int,
+    exposure: ProjectExposure = .tailnet,
+    createdAt: Date = Date(),
+    endedAt: Date? = nil
+  ) {
+    self.id = id
+    self.projectID = projectID
+    self.pid = pid
+    self.processStartedAt = processStartedAt
+    self.ingressPort = ingressPort
+    self.adminPort = adminPort
+    self.exposure = exposure
+    self.createdAt = createdAt
+    self.endedAt = endedAt
+  }
+}
+
+/// Whether Tailreg launched an application, and may therefore stop it.
+///
+/// An attached application is someone else's process that Tailreg merely routes to. The
+/// distinction is what keeps a lifecycle command from signalling a process it does not own.
+public enum ApplicationOwnership: String, Codable, Equatable, Sendable {
+  case managed
+  case attached
+}
+
+/// One run of one application under a project.
+///
+/// Routes describe what the MUX serves; this describes what Tailreg started and is responsible
+/// for stopping. A route cannot carry that on its own: it survives a restart in place, it says
+/// nothing about ownership, and an application configured with `expose = false` has no route at
+/// all yet still has a process.
+@Table("appRuns")
+public struct AppRunRecord: Hashable, Sendable {
+  public let id: UUIDV7
+  public var projectID: UUIDV7
+  public var name: String
+  public var ownership: ApplicationOwnership
+  public var routeID: UUIDV7?
+  /// The root Tailscale binding this run was published under. A binding stays bound for as
+  /// long as a live run references it, so this is the reference.
+  public var bindingID: UUIDV7?
+  public var pid: Int?
+  public var processGroupID: Int?
+  /// Identifies the process behind `pid`, so a recycled PID is never mistaken for this run.
+  /// Nil when the start time could not be read, which leaves the run unverifiable rather than
+  /// assumed live.
+  public var processStartedAt: Int64?
+  public var createdAt: Date
+  public var endedAt: Date?
+
+  public init(
+    id: UUIDV7 = UUIDV7(),
+    projectID: UUIDV7,
+    name: String,
+    ownership: ApplicationOwnership,
+    routeID: UUIDV7? = nil,
+    bindingID: UUIDV7? = nil,
+    pid: Int? = nil,
+    processGroupID: Int? = nil,
+    processStartedAt: Int64? = nil,
+    createdAt: Date = Date(),
+    endedAt: Date? = nil
+  ) {
+    self.id = id
+    self.projectID = projectID
+    self.name = name
+    self.ownership = ownership
+    self.routeID = routeID
+    self.bindingID = bindingID
+    self.pid = pid
+    self.processGroupID = processGroupID
+    self.processStartedAt = processStartedAt
+    self.createdAt = createdAt
+    self.endedAt = endedAt
+  }
+
+  public var isLive: Bool { endedAt == nil }
 }
 
 @Table("httpExchanges")
@@ -572,6 +749,158 @@ public func tailregDatabaseMigrator() -> DatabaseMigrator {
         ON "httpExchangeClassificationRefinements" (
           "classifierID", "classifierVersion", "id"
         )
+      """
+    )
+    .execute(db)
+  }
+
+  migrator.registerMigration("v5: scope routes to MUX instances") { db in
+    try #sql(
+      """
+      CREATE TABLE "muxInstances" (
+        "id"        TEXT NOT NULL PRIMARY KEY,
+        "createdAt" TEXT NOT NULL,
+        "endedAt"   TEXT
+      ) STRICT
+      """
+    )
+    .execute(db)
+
+    let legacyMUX = MuxInstanceRecord()
+    try MuxInstanceRecord.insert { legacyMUX }.execute(db)
+
+    try #sql(
+      """
+      ALTER TABLE "muxRoutes"
+        ADD COLUMN "muxID" TEXT REFERENCES "muxInstances"("id")
+      """
+    )
+    .execute(db)
+    try MuxRouteRecord
+      .where { $0.muxID.is(nil) }
+      .update { $0.muxID = #bind(legacyMUX.id) }
+      .execute(db)
+
+    try #sql(
+      """
+      ALTER TABLE "muxRoutes"
+        ADD COLUMN "pathMode" TEXT NOT NULL DEFAULT 'strip-route-prefix'
+        CHECK ("pathMode" IN ('strip-route-prefix', 'preserve-route-prefix'))
+      """
+    )
+    .execute(db)
+
+    try #sql("DROP INDEX \"muxRoutes_live_route\"").execute(db)
+    try #sql(
+      """
+      CREATE UNIQUE INDEX "muxRoutes_live_route"
+        ON "muxRoutes" ("muxID", "route")
+        WHERE "endedAt" IS NULL
+      """
+    )
+    .execute(db)
+    try #sql(
+      """
+      CREATE INDEX "muxRoutes_mux"
+        ON "muxRoutes" ("muxID", "createdAt")
+      """
+    )
+    .execute(db)
+  }
+
+  migrator.registerMigration("v6: create project runtimes") { db in
+    try #sql(
+      """
+      CREATE TABLE "projects" (
+        "id"        TEXT NOT NULL PRIMARY KEY,
+        "rootPath"  TEXT NOT NULL UNIQUE,
+        "name"      TEXT NOT NULL,
+        "muxID"     TEXT NOT NULL UNIQUE,
+        "createdAt" TEXT NOT NULL,
+
+        CHECK ("rootPath" <> ''),
+        CHECK ("name" <> '')
+      ) STRICT
+      """
+    )
+    .execute(db)
+
+    try #sql(
+      """
+      CREATE TABLE "muxRuns" (
+        "id"               TEXT    NOT NULL PRIMARY KEY,
+        "projectID"        TEXT    NOT NULL REFERENCES "projects"("id") ON DELETE CASCADE,
+        "pid"              INTEGER NOT NULL,
+        "processStartedAt" INTEGER,
+        "ingressPort"      INTEGER NOT NULL,
+        "adminPort"        INTEGER NOT NULL,
+        "exposure"         TEXT    NOT NULL,
+        "createdAt"        TEXT    NOT NULL,
+        "endedAt"          TEXT,
+
+        CHECK ("pid" > 0),
+        CHECK ("ingressPort" BETWEEN 1 AND 65535),
+        CHECK ("adminPort" BETWEEN 1 AND 65535),
+        CHECK ("ingressPort" <> "adminPort"),
+        CHECK ("exposure" IN ('tailnet', 'local'))
+      ) STRICT
+      """
+    )
+    .execute(db)
+
+    try #sql(
+      """
+      CREATE UNIQUE INDEX "muxRuns_live_project"
+        ON "muxRuns" ("projectID")
+        WHERE "endedAt" IS NULL
+      """
+    )
+    .execute(db)
+  }
+
+  migrator.registerMigration("v7: record application runs") { db in
+    try #sql(
+      """
+      CREATE TABLE "appRuns" (
+        "id"               TEXT    NOT NULL PRIMARY KEY,
+        "projectID"        TEXT    NOT NULL REFERENCES "projects"("id") ON DELETE CASCADE,
+        "name"             TEXT    NOT NULL,
+        "ownership"        TEXT    NOT NULL,
+        "routeID"          TEXT    REFERENCES "muxRoutes"("id") ON DELETE SET NULL,
+        "bindingID"        TEXT    REFERENCES "bindings"("id") ON DELETE SET NULL,
+        "pid"              INTEGER,
+        "processGroupID"   INTEGER,
+        "processStartedAt" INTEGER,
+        "createdAt"        TEXT    NOT NULL,
+        "endedAt"          TEXT,
+
+        CHECK ("name" <> ''),
+        CHECK ("ownership" IN ('managed', 'attached')),
+        CHECK ("pid" IS NULL OR "pid" > 0),
+        CHECK ("processGroupID" IS NULL OR "processGroupID" > 0),
+        -- Only a managed run has a process, and it has both identifiers or neither.
+        CHECK (("ownership" = 'managed') OR ("pid" IS NULL AND "processGroupID" IS NULL)),
+        CHECK (("pid" IS NULL) = ("processGroupID" IS NULL)),
+        CHECK ("processStartedAt" IS NULL OR "pid" IS NOT NULL)
+      ) STRICT
+      """
+    )
+    .execute(db)
+
+    // One live run per application makes "the current run" a fact the database enforces, so
+    // ending a run is a compare-and-swap rather than a comparison of derived attributes.
+    try #sql(
+      """
+      CREATE UNIQUE INDEX "appRuns_live_application"
+        ON "appRuns" ("projectID", "name")
+        WHERE "endedAt" IS NULL
+      """
+    )
+    .execute(db)
+
+    try #sql(
+      """
+      CREATE INDEX "appRuns_project" ON "appRuns" ("projectID", "createdAt")
       """
     )
     .execute(db)

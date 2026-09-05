@@ -2,6 +2,7 @@ import AsyncHTTPClient
 import Foundation
 import HTTPTypes
 import Hummingbird
+import SQLiteData
 import TailregCore
 import UUIDV7
 
@@ -19,12 +20,17 @@ public struct MuxIngressResponder: HTTPResponder, Sendable {
 
   private let cookieName: String
   private let secureCookies: Bool
+  private let pathPolicy: MuxPathPolicy
+  private let unmatchedPathPolicy: UnmatchedPathPolicy
   private let routeResolver: MuxRouteResolver
   private let headerPolicy: MuxHeaderPolicy
   private let captureRecorder: CaptureRecorder?
 
   public init(
-    registry: BindingRegistry,
+    database: any DatabaseWriter,
+    muxID: UUIDV7,
+    pathPolicy: MuxPathPolicy,
+    unmatchedPathPolicy: UnmatchedPathPolicy = .reject,
     cookieName: String,
     secureCookies: Bool,
     capturedHeaderPolicy: CapturedHeaderPolicy = .redactSensitiveValues,
@@ -32,7 +38,15 @@ public struct MuxIngressResponder: HTTPResponder, Sendable {
   ) {
     self.cookieName = cookieName
     self.secureCookies = secureCookies
-    self.routeResolver = MuxRouteResolver(registry: registry, cookieName: cookieName)
+    self.pathPolicy = pathPolicy
+    self.unmatchedPathPolicy = unmatchedPathPolicy
+    self.routeResolver = MuxRouteResolver(
+      database: database,
+      muxID: muxID,
+      pathPolicy: pathPolicy,
+      unmatchedPathPolicy: unmatchedPathPolicy,
+      cookieName: cookieName
+    )
     self.headerPolicy = MuxHeaderPolicy(
       cookieName: cookieName,
       secureCookies: secureCookies,
@@ -42,15 +56,7 @@ public struct MuxIngressResponder: HTTPResponder, Sendable {
   }
 
   public func respond(to request: Request, context: BasicRequestContext) async throws -> Response {
-    if request.uri.path == "/_tailreg/status" {
-      return try response(
-        MultiplexerStatus(status: "ok"),
-        status: .ok,
-        for: request,
-        context: context
-      )
-    }
-    guard let resolved = await routeResolver.resolve(request) else {
+    guard let resolved = try await routeResolver.resolve(request) else {
       return try response(
         MultiplexerErrorResponse(
           error: "route_not_resolved",
@@ -62,8 +68,20 @@ public struct MuxIngressResponder: HTTPResponder, Sendable {
       )
     }
 
+    if headerPolicy.requestHeader("upgrade", in: request) != nil {
+      return try response(
+        MultiplexerErrorResponse(
+          error: "upgrade_not_supported",
+          message: "Bidirectional protocol upgrades are not supported by this MUX yet."
+        ),
+        status: .notImplemented,
+        for: request,
+        context: context
+      )
+    }
+
     if resolved.isExplicit && request.uri.path == "/\(resolved.binding.route)" {
-      var location = "/\(resolved.binding.route)/"
+      var location = pathPolicy.publicPath(route: resolved.binding.route)
       if let query = request.uri.query { location += "?\(query)" }
       var headers = HTTPFields()
       headers[.location] = location
@@ -72,11 +90,11 @@ public struct MuxIngressResponder: HTTPResponder, Sendable {
 
     do {
       var response = try await proxy(request, to: resolved)
-      if resolved.isExplicit {
+      if resolved.isExplicit && unmatchedPathPolicy == .lastSelectedRouteCompatibility {
         response.setCookie(
           Cookie(
             name: cookieName,
-            value: resolved.binding.token,
+            value: resolved.binding.route,
             path: "/",
             secure: secureCookies,
             httpOnly: true,
@@ -118,7 +136,11 @@ public struct MuxIngressResponder: HTTPResponder, Sendable {
 
     var upstreamRequest = HTTPClientRequest(url: upstreamURL.absoluteString)
     upstreamRequest.method = .RAW(value: request.method.rawValue)
-    headerPolicy.copyRequestHeaders(from: request, to: &upstreamRequest, route: resolved.binding.route)
+    headerPolicy.copyRequestHeaders(
+      from: request,
+      to: &upstreamRequest,
+      forwardedPrefix: pathPolicy.forwardedPrefix(route: resolved.binding.route)
+    )
 
     let exchangeID = captureRecorder.map { _ in UUIDV7() }
     if let captureRecorder, let exchangeID {
@@ -136,7 +158,12 @@ public struct MuxIngressResponder: HTTPResponder, Sendable {
           routeID: resolved.binding.id,
           method: request.method.rawValue,
           host: request.head.authority,
-          path: request.uri.path,
+          path: resolved.isExplicit
+            ? pathPolicy.publicPath(
+              route: resolved.binding.route,
+              remainder: resolved.routeRelativePath
+            )
+            : request.uri.path,
           query: request.uri.query,
           requestHeaders: upstreamRequest.headers.map { header in
             headerPolicy.capturedHeader(name: header.name.lowercased(), value: header.value)

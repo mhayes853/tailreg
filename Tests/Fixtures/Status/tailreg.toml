@@ -1,0 +1,13 @@
+[project]
+name = "status"
+
+# Both applications attach to upstreams the test starts itself. Nothing is supervised, so `up`
+# publishes the routes and returns, and what `status` then reports is a settled runtime rather
+# than one a supervisor is still moving.
+[apps.api]
+route = "api"
+attach = "http://127.0.0.1:19114"
+
+[apps.web]
+route = "web"
+attach = "http://127.0.0.1:19113"

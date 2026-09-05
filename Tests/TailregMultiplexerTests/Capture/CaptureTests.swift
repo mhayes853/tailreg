@@ -61,12 +61,17 @@ struct `MUX capture tests` {
       path: directory.appendingPathComponent("tailreg.sqlite").path,
       kind: .queue
     )
-    let registry = BindingRegistry(database: database)
-    let binding = try await registry.register(
+    let muxID = UUIDV7()
+    let multiplexer = Multiplexer(
+      configuration: Multiplexer.Configuration(id: muxID),
+      database: database
+    )
+    let binding = try await multiplexer.registerRoute(
       name: "web",
       upstream: URL(string: "http://127.0.0.1:3000")!
     )
     let recorder = CaptureRecorder(
+      muxID: muxID,
       database: database,
       classificationRefiner: PreviewEchoRefiner(),
       batchSize: 100,
@@ -161,11 +166,14 @@ struct `MUX capture tests` {
       path: directory.appendingPathComponent("tailreg.sqlite").path,
       kind: .queue
     )
-    let route = MuxRouteRecord(
+    let muxID = UUIDV7()
+    let multiplexer = Multiplexer(
+      configuration: Multiplexer.Configuration(id: muxID),
+      database: database
+    )
+    let route = try await multiplexer.registerRoute(
       name: "web",
-      route: "web-0",
-      upstreamURL: "http://127.0.0.1:3000",
-      createdAt: Date()
+      upstream: URL(string: "http://127.0.0.1:3000")!
     )
     let exchange = HTTPExchangeRecord(
       routeID: route.id,
@@ -175,11 +183,11 @@ struct `MUX capture tests` {
       startedAt: Date()
     )
     try await database.write { db in
-      try MuxRouteRecord.insert { route }.execute(db)
       try HTTPExchangeRecord.insert { exchange }.execute(db)
     }
 
     let recorder = CaptureRecorder(
+      muxID: muxID,
       database: database,
       batchSize: 100,
       flushInterval: .milliseconds(5)
@@ -192,6 +200,70 @@ struct `MUX capture tests` {
     #expect(stored?.outcome == .abandoned)
     #expect(stored?.failure == "mux_restarted")
     #expect(stored?.completedAt != nil)
+    await recorder.finish()
+  }
+
+  @Test
+  func `Restart recovery does not abandon another MUX's exchanges`() async throws {
+    let database = try openTailregDatabase(path: ":memory:", kind: .queue)
+    let firstMUXID = UUIDV7()
+    let secondMUXID = UUIDV7()
+    let firstMux = Multiplexer(
+      configuration: Multiplexer.Configuration(id: firstMUXID),
+      database: database
+    )
+    let secondMux = Multiplexer(
+      configuration: Multiplexer.Configuration(id: secondMUXID),
+      database: database
+    )
+    let firstRoute = try await firstMux.registerRoute(
+      name: "web",
+      upstream: URL(string: "http://127.0.0.1:3000")!
+    )
+    let secondRoute = try await secondMux.registerRoute(
+      name: "web",
+      upstream: URL(string: "http://127.0.0.1:3001")!
+    )
+    // Both multiplexers run their own restart recovery when they are created, and it abandons
+    // whatever is in progress for their MUX. Letting that land before these exchanges exist keeps
+    // the test about the recorder under test rather than a race with the multiplexers' own.
+    await firstMux.captureRecorder?.flush()
+    await secondMux.captureRecorder?.flush()
+
+    let firstExchange = HTTPExchangeRecord(
+      routeID: firstRoute.id,
+      method: "GET",
+      path: "/web-0/stream",
+      requestHeaders: [],
+      startedAt: Date()
+    )
+    let secondExchange = HTTPExchangeRecord(
+      routeID: secondRoute.id,
+      method: "GET",
+      path: "/web-0/stream",
+      requestHeaders: [],
+      startedAt: Date()
+    )
+    try await database.write { db in
+      try HTTPExchangeRecord.insert { [firstExchange, secondExchange] }.execute(db)
+    }
+
+    let recorder = CaptureRecorder(
+      muxID: firstMUXID,
+      database: database,
+      batchSize: 100,
+      flushInterval: .milliseconds(5)
+    )
+    await recorder.flush()
+
+    let outcomes = try await database.read { db in
+      (
+        try HTTPExchangeRecord.find(firstExchange.id).fetchOne(db)?.outcome,
+        try HTTPExchangeRecord.find(secondExchange.id).fetchOne(db)?.outcome
+      )
+    }
+    #expect(outcomes.0 == .abandoned)
+    #expect(outcomes.1 == .inProgress)
     await recorder.finish()
   }
 }
