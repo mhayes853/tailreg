@@ -113,13 +113,26 @@ struct ProjectRuntimeTeardown: Sendable {
         continue
       }
       do {
-        try await endpointController.remove(binding)
-        outcomes.append(holders.isEmpty ? .removed(binding) : .forced(binding, holders: holders))
+        outcomes.append(try await #run($releaseBinding(binding, holders: holders)))
       } catch {
         outcomes.append(.failed(binding, "\(error)"))
       }
     }
     return outcomes
+  }
+
+  /// Unbinds one root binding, reporting whether it was still held when it went.
+  ///
+  /// The failure is left for the caller to record: a binding that could not be unbound is one
+  /// outcome among several, and swallowing it here would hide it from everything watching the
+  /// unbind itself.
+  @OperationRequest
+  private func releaseBinding(
+    _ binding: TailscaleBindingRecord,
+    holders: [String]
+  ) async throws -> BindingOutcome {
+    try await endpointController.remove(binding)
+    return holders.isEmpty ? .removed(binding) : .forced(binding, holders: holders)
   }
 }
 

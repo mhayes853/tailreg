@@ -1,4 +1,5 @@
 import Foundation
+import Operation
 import TailregCore
 import UUIDV7
 
@@ -28,6 +29,17 @@ struct TailnetEndpointController: TailnetEndpointRemoving {
     ingressPort: PortNumber,
     exposure: ProjectExposure,
     requestedPort: PortNumber? = nil
+  ) async throws -> TailnetEndpoint {
+    try await #run(
+      $ensureEndpoint(ingressPort: ingressPort, exposure: exposure, requestedPort: requestedPort)
+    )
+  }
+
+  @OperationRequest
+  private func ensureEndpoint(
+    ingressPort: PortNumber,
+    exposure: ProjectExposure,
+    requestedPort: PortNumber?
   ) async throws -> TailnetEndpoint {
     if exposure == .local {
       return TailnetEndpoint(url: .muxIngress(port: ingressPort), bindingID: nil)

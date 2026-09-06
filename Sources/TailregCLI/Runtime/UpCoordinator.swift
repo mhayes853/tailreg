@@ -96,10 +96,11 @@ struct UpCoordinator: Sendable {
       terminator: terminator
     )
     let exposure: ProjectExposure = request.localOnly ? .local : .tailnet
-    let (runtime, muxWasStarted) = try await muxController.ensureRunning(
+    let ensured = try await muxController.ensureRunning(
       for: project.record,
       exposure: exposure
     )
+    let runtime = ensured.run
     if request.localOnly, runtime.exposure == .tailnet {
       await console.warning(
         "this project is already published on the tailnet; --local-only leaves that binding in place"
@@ -117,7 +118,7 @@ struct UpCoordinator: Sendable {
         requestedPort: request.tailnetPort
       )
     } catch {
-      if muxWasStarted { try? await muxController.stop(runtime) }
+      if ensured.wasStarted { try? await muxController.stop(runtime) }
       throw error
     }
     let baseURL = endpoint.url

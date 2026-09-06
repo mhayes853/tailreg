@@ -21,8 +21,18 @@ struct MuxProcessController: Sendable {
   /// Cookies are marked secure only for a tailnet runtime: the loopback listener is served over
   /// plain HTTP, where a secure cookie would never be sent back.
   func ensureRunning(for project: ProjectRecord, exposure: ProjectExposure) async throws
-    -> (MuxRunRecord, Bool)
+    -> EnsuredMuxRuntime
   {
+    try await #run($ensureMuxRunning(for: project, exposure: exposure))
+  }
+
+  /// The runtime lock is taken inside the operation rather than around it, so the wait for it is
+  /// attributed to bringing the MUX up rather than disappearing before the work starts.
+  @OperationRequest
+  private func ensureMuxRunning(
+    for project: ProjectRecord,
+    exposure: ProjectExposure
+  ) async throws -> EnsuredMuxRuntime {
     return try await FileLock.runtime(forDatabaseAt: databasePath)
       .withLock(.exclusive) {
         if var existing = try await liveRun(for: project.id) {
@@ -35,7 +45,7 @@ struct MuxProcessController: Sendable {
               try await setExposure(.tailnet, of: existing.id)
               existing.exposure = .tailnet
             }
-            return (existing, false)
+            return EnsuredMuxRuntime(run: existing, wasStarted: false)
           }
           try await end(existing.id)
         }
@@ -47,7 +57,7 @@ struct MuxProcessController: Sendable {
             }
             .backoff(.exponential(.milliseconds(25)).jittered())
         )
-        return (run, true)
+        return EnsuredMuxRuntime(run: run, wasStarted: true)
       }
   }
 
@@ -123,6 +133,11 @@ struct MuxProcessController: Sendable {
   /// down.
   @discardableResult
   func stop(_ run: MuxRunRecord) async throws -> TerminationOutcome {
+    try await #run($stopMux(run))
+  }
+
+  @OperationRequest
+  private func stopMux(_ run: MuxRunRecord) async throws -> TerminationOutcome {
     var outcome = TerminationOutcome.alreadyExited
     if run.hasMatchingProcess {
       outcome = await terminator.terminate(.process(pid_t(run.pid)), observing: .observed)
@@ -205,6 +220,12 @@ struct MuxProcessController: Sendable {
     }
     throw MuxRuntimeError.noLocalPorts
   }
+}
+
+/// The project's MUX runtime, and whether this invocation is what started it.
+struct EnsuredMuxRuntime: Sendable {
+  let run: MuxRunRecord
+  let wasStarted: Bool
 }
 
 enum MuxRuntimeError: Error, CustomStringConvertible {
