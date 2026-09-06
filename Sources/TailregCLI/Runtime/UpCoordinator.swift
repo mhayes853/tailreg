@@ -408,7 +408,48 @@ struct UpCoordinator: Sendable {
   /// Publishes a recorded run's route, if it has one.
   ///
   /// A route with the requested name that already exists is updated in place rather than
-  /// replaced, and remembered so a failed `up` can put it back.
+  /// replaced, and remembered so a failed `up` can put it back. The run is pointed at the route
+  /// in the same operation that creates it: a published route whose run does not reference it is
+  /// one nothing can later prove it owns.
+  @OperationRequest
+  private func publishRoute(
+    _ specification: ApplicationSpecification,
+    run appRun: AppRunRecord,
+    through admin: MuxAdminClient,
+    in database: any DatabaseWriter
+  ) async throws -> PublishedRoute {
+    guard let exposure = specification.exposure else { return PublishedRoute() }
+    var previous: MuxRouteResponse?
+    if let requestedRoute = exposure.route {
+      previous = try await #run(admin.$routes.retryingWhileMuxStarts())
+        .first { $0.route == requestedRoute }
+    }
+    let route: MuxRouteResponse
+    if let previous {
+      route = try await admin.update(
+        route: previous.route,
+        upstream: exposure.upstream.url,
+        pathMode: exposure.pathMode
+      )
+    } else {
+      route = try await admin.register(
+        MuxRouteRegistrationRequest(
+          name: specification.name,
+          route: exposure.route,
+          upstreamURL: exposure.upstream.description,
+          pathMode: exposure.pathMode
+        )
+      )
+    }
+    let routeID: UUIDV7? = route.id
+    try await database.write { database in
+      try AppRunRecord.find(appRun.id)
+        .update { $0.routeID = #bind(routeID) }
+        .execute(database)
+    }
+    return PublishedRoute(route: route, previous: previous)
+  }
+
   private func publish(
     _ specification: ApplicationSpecification,
     run appRun: AppRunRecord,
@@ -417,44 +458,15 @@ struct UpCoordinator: Sendable {
     admin: MuxAdminClient,
     database: any DatabaseWriter
   ) async throws -> RunningApplication {
-    var route: MuxRouteResponse?
-    var previousRoute: MuxRouteResponse?
-    if let exposure = specification.exposure {
-      if let requestedRoute = exposure.route {
-        previousRoute = try await admin.routes().first { $0.route == requestedRoute }
-      }
-      if let previousRoute {
-        route = try await admin.update(
-          route: previousRoute.route,
-          upstream: exposure.upstream.url,
-          pathMode: exposure.pathMode
-        )
-      } else {
-        route = try await admin.register(
-          MuxRouteRegistrationRequest(
-            name: specification.name,
-            route: exposure.route,
-            upstreamURL: exposure.upstream.description,
-            pathMode: exposure.pathMode
-          )
-        )
-      }
-    }
-    if let route {
-      let routeID: UUIDV7? = route.id
-      try await database.write { database in
-        try AppRunRecord.find(appRun.id)
-          .update { $0.routeID = #bind(routeID) }
-          .execute(database)
-      }
-    }
-
+    let published = try await #run(
+      $publishRoute(specification, run: appRun, through: admin, in: database)
+    )
     return RunningApplication(
       name: specification.name,
       appRunID: appRun.id,
       process: process,
-      route: route,
-      previousRoute: previousRoute,
+      route: published.route,
+      previousRoute: published.previous,
       outputTasks: outputTasks
     )
   }
@@ -569,22 +581,41 @@ struct UpCoordinator: Sendable {
     admin: MuxAdminClient,
     restoringPrevious: Bool = false
   ) async {
-    guard let applied = application.route,
-      let current = (try? await admin.routes())?.first(where: { $0.route == applied.route }),
+    guard let applied = application.route else { return }
+    try? await #run(
+      $unpublishRoute(
+        applied,
+        restoring: restoringPrevious ? application.previousRoute : nil,
+        through: admin
+      )
+    )
+  }
+
+  /// Withdraws a route this invocation published, leaving anyone else's in place.
+  ///
+  /// The route is only touched while it still is the one that was published: a restart between
+  /// then and now has replaced it, and its new owner is the one entitled to remove it.
+  @OperationRequest
+  private func unpublishRoute(
+    _ applied: MuxRouteResponse,
+    restoring previous: MuxRouteResponse?,
+    through admin: MuxAdminClient
+  ) async throws {
+    guard
+      let current = try await #run(admin.$routes.retryingWhileMuxStarts())
+        .first(where: { $0.route == applied.route }),
       current.id == applied.id,
       current.upstreamURL == applied.upstreamURL,
       current.pathMode == applied.pathMode
     else { return }
-    if restoringPrevious, let previous = application.previousRoute,
-      let upstream = URL(string: previous.upstreamURL)
-    {
-      _ = try? await admin.update(
+    if let previous, let upstream = URL(string: previous.upstreamURL) {
+      _ = try await admin.update(
         route: previous.route,
         upstream: upstream,
         pathMode: previous.pathMode
       )
     } else {
-      try? await admin.remove(route: applied.route)
+      try await admin.remove(route: applied.route)
     }
   }
 
@@ -629,6 +660,12 @@ struct UpCoordinator: Sendable {
 private struct LaunchedApplication: Sendable {
   let process: LaunchedProcess
   let outputTasks: [Task<Void, Never>]
+}
+
+/// A route this invocation published, and whatever it replaced.
+struct PublishedRoute: Sendable {
+  var route: MuxRouteResponse?
+  var previous: MuxRouteResponse?
 }
 
 private struct RunningApplication: Sendable {

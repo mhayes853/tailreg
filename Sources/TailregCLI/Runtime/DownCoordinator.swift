@@ -1,4 +1,5 @@
 import Foundation
+import Operation
 import SQLiteData
 import TailregCore
 import TailregMultiplexer
@@ -228,7 +229,7 @@ struct DownCoordinator: Sendable {
     admin: MuxAdminClient,
     application: String
   ) async {
-    guard let routes = try? await admin.routes() else {
+    guard let routes = try? await #run(admin.$routes.retryingWhileMuxStarts()) else {
       await console.warning("could not list routes to remove the one for '\(application)'")
       return
     }

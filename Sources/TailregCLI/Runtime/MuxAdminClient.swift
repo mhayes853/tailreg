@@ -1,4 +1,5 @@
 import Foundation
+import Operation
 import TailregCore
 import TailregMultiplexer
 import UUIDV7
@@ -28,6 +29,7 @@ struct MuxAdminClient: Sendable {
     return status?.id
   }
 
+  @OperationRequest
   func routes() async throws -> [MuxRouteResponse] {
     try await request(path: "/routes", method: "GET")
   }
@@ -90,6 +92,21 @@ struct MuxAdminClient: Sendable {
   }
 }
 
+extension OperationRequest {
+  /// Retries an admin API call for as long as the MUX may simply not be answering yet.
+  ///
+  /// A MUX that is starting, restarting, or momentarily saturated refuses the connection rather
+  /// than answering badly, and the caller's only alternative is to fail an invocation over a
+  /// condition that clears in milliseconds. A reply that arrives and says no is not retried: the
+  /// MUX has answered, and asking again produces the same answer.
+  func retryingWhileMuxStarts(
+    limit: Int = 3
+  ) -> some OperationRequest<Value, Failure> {
+    self.retry(limit: limit) { error, _ in MuxAdminError.isTransport(error) }
+      .backoff(.exponential(.milliseconds(25)).jittered())
+  }
+}
+
 enum MuxAdminError: Error, CustomStringConvertible {
   case invalidURL
   case invalidResponse
@@ -101,5 +118,13 @@ enum MuxAdminError: Error, CustomStringConvertible {
     case .invalidResponse: "invalid response from MUX admin API"
     case .status(let status): "MUX admin API returned HTTP \(status)"
     }
+  }
+
+  /// Whether the request never reached a MUX that could answer it.
+  ///
+  /// Only a failure to connect qualifies. A status, or a body that will not decode, is a MUX that
+  /// is running and answering; asking it again produces the same answer.
+  static func isTransport(_ error: any Error) -> Bool {
+    error is URLError
   }
 }

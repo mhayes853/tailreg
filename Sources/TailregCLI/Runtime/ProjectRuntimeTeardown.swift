@@ -1,4 +1,5 @@
 import Foundation
+import Operation
 import SQLiteData
 import TailregCore
 
@@ -133,7 +134,7 @@ extension ProjectRuntimeTeardown {
     endpointController: any TailnetEndpointRemoving
   ) {
     self.init(
-      liveRouteCount: { try await admin.routes().count },
+      liveRouteCount: { try await #run(admin.$routes.retryingWhileMuxStarts()).count },
       muxController: muxController,
       endpointController: endpointController
     )
