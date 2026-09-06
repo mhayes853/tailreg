@@ -142,22 +142,3 @@ struct `Polling tests` {
     #expect(counter.count == 3)
   }
 }
-
-@Suite
-struct `Jittered backoff tests` {
-  @Test
-  func `Stays Within The Unjittered Backoff For Sub Second Durations`() {
-    let backoff = OperationBackoffFunction.exponential(.milliseconds(25))
-      .jitteredBelowOneSecond()
-    for attempt in 1...6 {
-      let jittered = backoff(attempt)
-      #expect(jittered >= .zero)
-      #expect(jittered < OperationBackoffFunction.exponential(.milliseconds(25))(attempt))
-    }
-  }
-
-  @Test
-  func `Returns No Backoff When The Underlying Function Returns None`() {
-    #expect(OperationBackoffFunction.noBackoff.jitteredBelowOneSecond()(3) == .zero)
-  }
-}

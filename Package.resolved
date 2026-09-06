@@ -1,5 +1,5 @@
 {
-  "originHash" : "2e445fb978a8cef5cadb12f421d9bc78c194951c5db3b405320323c4300729ea",
+  "originHash" : "a0a4b79e63640f5cf202087d1f98393d090eec703ecd1bb77d46cd0d9f969650",
   "pins" : [
     {
       "identity" : "async-http-client",
@@ -302,8 +302,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/mhayes853/swift-operation.git",
       "state" : {
-        "revision" : "28f97a4babd379cf5ec2dd7d3a0191889c841dd0",
-        "version" : "0.6.0"
+        "revision" : "07a7751bf7a6bfe24c579528628da5420ee357d5",
+        "version" : "0.6.1"
       }
     },
     {

@@ -500,7 +500,7 @@ struct UpCoordinator: Sendable {
     application: String
   ) async throws {
     let timeout = try MillisecondsSetting.applicationStartup.resolve(from: environment)
-    let listening = try await poll(within: timeout) {
+    let listening: Void? = try await poll(within: timeout) {
       if await portProbe.isListening(port: port) { return .ready(()) }
       if let process, process.hasExited { throw UpError.exitedBeforeReady(application) }
       return .notYet

@@ -43,7 +43,7 @@ struct MuxProcessController: Sendable {
         let run = try await #run(
           $launchMux(project, exposure: exposure)
             .retry(limit: Self.launchRetries) { ($0 as? MuxRuntimeError)?.isWorthRetrying == true }
-            .backoff(.exponential(.milliseconds(25)).jitteredBelowOneSecond())
+            .backoff(.exponential(.milliseconds(25)).jittered())
         )
         return (run, true)
       }
@@ -156,7 +156,7 @@ struct MuxProcessController: Sendable {
   /// this project does not own.
   private func waitUntilReady(_ run: MuxRunRecord, as muxID: UUIDV7) async throws {
     let client = MuxAdminClient(port: run.adminPort)
-    let ready = try await poll(within: Self.readinessTimeout) {
+    let ready: Void? = try await poll(within: Self.readinessTimeout) {
       if await client.isReady(as: muxID) { return .ready(()) }
       // Someone else has the port. Ours cannot have it, whether or not it is still trying.
       if await client.isReady() { throw MuxRuntimeError.portsTakenSinceProbing }

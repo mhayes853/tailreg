@@ -53,7 +53,7 @@ let package = Package(
     ),
     .package(
       url: "https://github.com/mhayes853/swift-operation.git",
-      from: "0.6.0"
+      from: "0.6.1"
     ),
     .package(
       url: "https://github.com/mhayes853/swift-edge-tools.git",
