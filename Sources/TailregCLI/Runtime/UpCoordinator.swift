@@ -135,13 +135,15 @@ struct UpCoordinator: Sendable {
         let started = try await withThrowingTaskGroup(of: RunningApplication.self) { group in
           for application in level {
             group.addTask {
-              try await start(
-                application,
-                endpoint: endpoint,
-                admin: admin,
-                terminator: terminator,
-                database: database,
-                projectID: project.record.id
+              try await #run(
+                $startApplication(
+                  application,
+                  endpoint: endpoint,
+                  admin: admin,
+                  terminator: terminator,
+                  database: database,
+                  projectID: project.record.id
+                )
               )
             }
           }
@@ -279,7 +281,8 @@ struct UpCoordinator: Sendable {
   /// is recorded before the listener is confirmed to be ours, and no route is published before
   /// the run that owns it exists. Anything that fails after the launch unwinds what this call
   /// created and leaves the rest of the invocation to roll itself back.
-  private func start(
+  @OperationRequest
+  private func startApplication(
     _ specification: ApplicationSpecification,
     endpoint: TailnetEndpoint,
     admin: MuxAdminClient,
@@ -287,7 +290,7 @@ struct UpCoordinator: Sendable {
     database: any DatabaseWriter,
     projectID: UUIDV7
   ) async throws -> RunningApplication {
-    let launched = try await launch(specification, endpoint: endpoint)
+    let launched = try await #run($launchApplication(specification, endpoint: endpoint))
     do {
       try await waitUntilReady(specification, process: launched?.process)
       let appRun = try await record(
@@ -327,7 +330,8 @@ struct UpCoordinator: Sendable {
   /// The command runs through `_exec` so that it leads its own process group, and it is told
   /// where the project and its own route are reachable, which is what lets a frontend address a
   /// sibling API through the MUX rather than through a port the user had to hardcode.
-  private func launch(
+  @OperationRequest
+  private func launchApplication(
     _ specification: ApplicationSpecification,
     endpoint: TailnetEndpoint
   ) async throws -> LaunchedApplication? {
@@ -368,7 +372,7 @@ struct UpCoordinator: Sendable {
     // The pre-launch check races with anything else that wants the port. The listener that
     // finally answered has to be the process this invocation started.
     if let process {
-      try await requireOwnership(of: port, by: process, application: specification.name)
+      try await #run($confirmPortOwnership(of: port, by: process, application: specification.name))
     }
   }
 
@@ -483,7 +487,8 @@ struct UpCoordinator: Sendable {
   /// The launched process leads its own group, so anything it forked to hold the socket is in
   /// that group; a direct parent link covers a child that re-parented itself. A scan that cannot
   /// run at all is reported rather than treated as proof either way.
-  private func requireOwnership(
+  @OperationRequest
+  private func confirmPortOwnership(
     of port: PortNumber,
     by process: LaunchedProcess,
     application: String

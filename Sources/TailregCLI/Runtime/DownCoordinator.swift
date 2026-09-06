@@ -134,7 +134,9 @@ struct DownCoordinator: Sendable {
 
     var outcomes: [(name: String, outcome: ApplicationDownOutcome)] = []
     for run in selected {
-      let outcome = await stop(run, database: database, terminator: terminator, admin: admin)
+      let outcome = await #run(
+        $stopApplication(run, database: database, terminator: terminator, admin: admin)
+      )
       outcomes.append((run.name, outcome))
     }
     let names = Set(selected.map(\.name))
@@ -167,11 +169,12 @@ struct DownCoordinator: Sendable {
   /// The process is stopped *before* the record is ended: a crash between the two leaves a live
   /// record with a dead process, which `reclaimAbandoned` recovers. Ending first would orphan a
   /// running process behind an ended record, which nothing can reclaim.
-  private func stop(
+  @OperationRequest
+  private func stopApplication(
     _ run: AppRunRecord,
     database: any DatabaseWriter,
     terminator: ProcessTerminator<ContinuousClock>,
-    admin: MuxAdminClient? = nil
+    admin: MuxAdminClient?
   ) async -> ApplicationDownOutcome {
     var outcome: ApplicationDownOutcome = run.ownership == .attached ? .detached : .alreadyDown
 
