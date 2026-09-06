@@ -1,4 +1,5 @@
 import Foundation
+import Operation
 import SQLiteData
 import TailregCore
 import TailregMultiplexer
@@ -165,7 +166,7 @@ struct StatusCoordinator: Sendable {
   private func muxStatus(of runtime: MuxRunRecord?) async -> MuxStatus {
     guard let runtime else { return MuxStatus(state: .notRunning) }
     let state: MuxStatus.State
-    if await muxIsReady(runtime.adminPort) {
+    if await #run($probeMux(adminPort: runtime.adminPort)) {
       state = .running
     } else if runtime.hasMatchingProcess {
       state = .unreachable
@@ -179,6 +180,15 @@ struct StatusCoordinator: Sendable {
       adminPort: runtime.adminPort,
       startedAt: runtime.createdAt
     )
+  }
+
+  /// One look at whether anything answers on the recorded admin port.
+  ///
+  /// The probe goes through the injected closure rather than building a client here, so what the
+  /// report says about a MUX can be tested without standing one up.
+  @OperationRequest
+  private func probeMux(adminPort: PortNumber) async -> Bool {
+    await muxIsReady(adminPort)
   }
 
   private func baseURL(for runtime: MuxRunRecord?, binding: TailscaleBindingRecord?) -> URL? {
@@ -267,9 +277,17 @@ struct StatusCoordinator: Sendable {
       }
     case .attached:
       guard let upstream = Self.upstream(of: route?.upstreamURL) else { return .unverified }
-      return await portProbe.isListening(host: upstream.host, port: upstream.port)
-        ? .running : .unreachable
+      return await #run($probeApplication(upstream: upstream)) ? .running : .unreachable
     }
+  }
+
+  /// One look at whether an attached run's upstream still answers.
+  ///
+  /// The decision about whether there is anything to probe stays with the caller, so this is
+  /// reached only for a run whose upstream is an address Tailreg could have published.
+  @OperationRequest
+  private func probeApplication(upstream: LoopbackURL) async -> Bool {
+    await portProbe.isListening(host: upstream.host, port: upstream.port)
   }
 
   private func routeStatus(of route: MuxRouteRecord, baseURL: URL?) -> RouteStatus {

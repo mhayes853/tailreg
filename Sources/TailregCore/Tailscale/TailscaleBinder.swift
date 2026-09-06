@@ -1,4 +1,5 @@
 import Foundation
+import Operation
 import SQLiteData
 import UUIDV7
 
@@ -43,6 +44,14 @@ public actor TailscaleBinder {
   // MARK: - Inspection
 
   public func bindings() async throws -> [TailscaleBinding] {
+    try await #run($tailscaleBindings)
+  }
+
+  /// The gate and the shared lock are taken inside the operation rather than around it, so the
+  /// wait for them is attributed to reading the bindings rather than disappearing before the work
+  /// starts.
+  @OperationRequest
+  private func tailscaleBindings() async throws -> [TailscaleBinding] {
     try await gate.withGate {
       try await self.fileLock.withLock(.shared) {
         try await self.snapshot()
@@ -67,6 +76,29 @@ public actor TailscaleBinder {
     to tailnetPort: TailscaleTailnetPort = .auto,
     mountPath: String = "/"
   ) async throws -> TailscaleBinding {
+    try await #run(
+      $bindTailnetPort(localPort: localPort, to: tailnetPort, mountPath: mountPath)
+        .retry(limit: Self.bindRetries) { error, _ in TailscaleError.isLostServeRace(error) }
+        .backoff(.exponential(.milliseconds(25)).jittered())
+    )
+  }
+
+  /// The number of further tailnet ports tried before giving up.
+  ///
+  /// A tailnet port is read as free and then written to the daemon's serve configuration, and
+  /// nothing holds it in between: another invocation resolving at the same moment reads the same
+  /// port as free, and the second write to land replaces the first. The loser finds its mount
+  /// missing from the confirming read, which is an ordinary outcome of two binds overlapping
+  /// rather than something worth failing an invocation over. The backoff is jittered because the
+  /// loser of one race is otherwise perfectly placed to lose the next one to the same opponent.
+  private static let bindRetries = 4
+
+  @OperationRequest
+  private func bindTailnetPort(
+    localPort: PortNumber,
+    to tailnetPort: TailscaleTailnetPort,
+    mountPath: String
+  ) async throws -> TailscaleBinding {
     try await gate.withGate {
       try await self.fileLock.withLock(.exclusive) {
         try await self.performBind(localPort: localPort, to: tailnetPort, mountPath: mountPath)
@@ -86,9 +118,20 @@ public actor TailscaleBinder {
   }
 
   /// Removes one mount, leaving anything else served on the same tailnet port alone.
+  ///
+  /// Never retried, whatever the failure. An unbind that timed out may already have reached the
+  /// daemon, and a second attempt would then remove whatever has since been mounted in its place.
   @discardableResult
   public func unbind(tailnetPort: PortNumber, mountPath: String) async throws -> [TailscaleBinding]
   {
+    try await #run($unbindTailnetPort(tailnetPort: tailnetPort, mountPath: mountPath))
+  }
+
+  @OperationRequest
+  private func unbindTailnetPort(
+    tailnetPort: PortNumber,
+    mountPath: String
+  ) async throws -> [TailscaleBinding] {
     try await gate.withGate {
       try await self.fileLock.withLock(.exclusive) {
         try await self.performRemove { $0.tailnetPort == tailnetPort && $0.mountPath == mountPath }
