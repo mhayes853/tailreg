@@ -42,7 +42,9 @@ struct MuxProcessController: Sendable {
 
         let run = try await #run(
           $launchMux(project, exposure: exposure)
-            .retry(limit: Self.launchRetries) { ($0 as? MuxRuntimeError)?.isWorthRetrying == true }
+            .retry(limit: Self.launchRetries) { error, _ in
+              (error as? MuxRuntimeError)?.isWorthRetrying == true
+            }
             .backoff(.exponential(.milliseconds(25)).jittered())
         )
         return (run, true)
