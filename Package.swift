@@ -52,6 +52,10 @@ let package = Package(
       from: "2.0.0"
     ),
     .package(
+      url: "https://github.com/mhayes853/swift-operation.git",
+      from: "0.6.0"
+    ),
+    .package(
       url: "https://github.com/mhayes853/swift-edge-tools.git",
       revision: "8a866e2e4dda952d9989d17e409d511d2a7a2f21",
       traits: ["Needle2"]
@@ -62,6 +66,7 @@ let package = Package(
       name: "TailregCore",
       dependencies: [
         .product(name: "EdgeTools", package: "swift-edge-tools"),
+        .product(name: "Operation", package: "swift-operation"),
         .product(name: "SQLiteData", package: "sqlite-data"),
         .product(name: "UUIDV7", package: "swift-uuidv7")
       ]
@@ -81,6 +86,7 @@ let package = Package(
         "TailregCore",
         "TailregMultiplexer",
         .product(name: "ArgumentParser", package: "swift-argument-parser"),
+        .product(name: "Operation", package: "swift-operation"),
         .product(name: "SQLiteData", package: "sqlite-data"),
         .product(name: "TOML", package: "swift-toml"),
         .product(name: "UUIDV7", package: "swift-uuidv7")
@@ -113,7 +119,8 @@ let package = Package(
       dependencies: [
         "TailregCore",
         "TailregTestSupport",
-        .product(name: "AsyncAlgorithms", package: "swift-async-algorithms")
+        .product(name: "AsyncAlgorithms", package: "swift-async-algorithms"),
+        .product(name: "Operation", package: "swift-operation")
       ]
     ),
     .testTarget(

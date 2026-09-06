@@ -35,27 +35,26 @@ enum BackgroundLauncher {
     try? log.close()
 
     defer { try? FileManager.default.removeItem(at: readyURL) }
-    let clock = ContinuousClock()
-    let deadline = clock.now.advanced(by: startupTimeout)
-    while clock.now < deadline {
+    let ready = try await poll(within: startupTimeout) {
       if FileManager.default.fileExists(atPath: readyURL.path) {
-        let ready = (try? String(contentsOf: readyURL, encoding: .utf8)) ?? ""
-        let message =
-          "Tailreg started in the background (pid \(process.processIdentifier))."
-          + (ready.isEmpty ? "\n" : "\n\(ready)\n")
-        try FileHandle.standardOutput.write(contentsOf: Data(message.utf8))
-        return
+        return .ready((try? String(contentsOf: readyURL, encoding: .utf8)) ?? "")
       }
-      if !process.isRunning {
+      guard process.isRunning else {
         throw BackgroundLaunchError.exited(
           status: process.terminationStatus,
           logPath: logURL.path
         )
       }
-      try await Task.sleep(for: .milliseconds(100))
+      return .notYet
     }
-    if process.isRunning { process.terminate() }
-    throw BackgroundLaunchError.timedOut(logPath: logURL.path)
+    guard let ready else {
+      if process.isRunning { process.terminate() }
+      throw BackgroundLaunchError.timedOut(logPath: logURL.path)
+    }
+    let message =
+      "Tailreg started in the background (pid \(process.processIdentifier))."
+      + (ready.isEmpty ? "\n" : "\n\(ready)\n")
+    try FileHandle.standardOutput.write(contentsOf: Data(message.utf8))
   }
 }
 

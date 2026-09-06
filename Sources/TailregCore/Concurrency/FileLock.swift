@@ -1,4 +1,5 @@
 import Foundation
+import Operation
 
 #if canImport(Darwin)
   import Darwin
@@ -51,26 +52,27 @@ public struct FileLock: Sendable {
       throw TailscaleError.lockUnavailable(path: path, detail: Self.errorDescription())
     }
 
-    var waited = Duration.zero
-    while true {
-      if flock(descriptor, mode.operation | LOCK_NB) == 0 { return descriptor }
+    let acquired = try await poll(
+      within: timeout,
+      every: .constant(OperationDuration(duration: pollInterval))
+    ) {
+      if flock(descriptor, mode.operation | LOCK_NB) == 0 { return .ready(descriptor) }
 
       let code = errno
       guard code == EWOULDBLOCK || code == EINTR else {
         close(descriptor)
         throw TailscaleError.lockUnavailable(path: path, detail: Self.errorDescription(code))
       }
-      guard waited < timeout else {
-        close(descriptor)
-        throw TailscaleError.lockUnavailable(
-          path: path,
-          detail: "timed out after \(timeout) waiting for another tailreg process"
-        )
-      }
-
-      try await Task.sleep(for: pollInterval)
-      waited += pollInterval
+      return .notYet
     }
+    guard let acquired else {
+      close(descriptor)
+      throw TailscaleError.lockUnavailable(
+        path: path,
+        detail: "timed out after \(timeout) waiting for another tailreg process"
+      )
+    }
+    return acquired
   }
 
   private func createLockDirectory() throws {

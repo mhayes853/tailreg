@@ -1,4 +1,5 @@
 import Foundation
+import Operation
 import SQLiteData
 import TailregCore
 import UUIDV7
@@ -39,31 +40,33 @@ struct MuxProcessController: Sendable {
           try await end(existing.id)
         }
 
-        var lastFailure: any Error = MuxRuntimeError.noLocalPorts
-        for attempt in 0..<Self.launchAttempts {
-          do {
-            return (try await launch(project, exposure: exposure, attempt: attempt), true)
-          } catch let failure as MuxRuntimeError where failure.isWorthRetrying {
-            lastFailure = failure
-          }
-        }
-        throw lastFailure
+        let run = try await #run(
+          $launchMux(project, exposure: exposure)
+            .retry(limit: Self.launchRetries) { ($0 as? MuxRuntimeError)?.isWorthRetrying == true }
+            .backoff(.exponential(.milliseconds(25)).jitteredBelowOneSecond())
+        )
+        return (run, true)
       }
   }
 
-  /// The number of port ranges tried before giving up.
+  /// The number of further port ranges tried before giving up.
   ///
   /// A port is probed and then bound, and nothing holds it in between: another MUX starting at the
   /// same moment can take it. Losing that race is ordinary, so it is retried elsewhere in the pool
-  /// rather than reported.
-  private static let launchAttempts = 5
+  /// rather than reported. The backoff is jittered because the loser of one race is otherwise
+  /// perfectly placed to lose the next one to the same opponent.
+  private static let launchRetries = 4
 
-  private func launch(
+  @OperationRequest
+  private func launchMux(
     _ project: ProjectRecord,
     exposure: ProjectExposure,
-    attempt: Int
+    context: OperationContext
   ) async throws -> MuxRunRecord {
-    let ports = try await allocatePorts(seed: project.rootPath, attempt: attempt)
+    let ports = try await allocatePorts(
+      seed: project.rootPath,
+      isFirstAttempt: context.isFirstRunAttempt
+    )
     let process = Process()
     process.executableURL = executableURL
     process.arguments =
@@ -153,15 +156,18 @@ struct MuxProcessController: Sendable {
   /// this project does not own.
   private func waitUntilReady(_ run: MuxRunRecord, as muxID: UUIDV7) async throws {
     let client = MuxAdminClient(port: run.adminPort)
-    for _ in 0..<300 {
-      if await client.isReady(as: muxID) { return }
+    let ready = try await poll(within: Self.readinessTimeout) {
+      if await client.isReady(as: muxID) { return .ready(()) }
       // Someone else has the port. Ours cannot have it, whether or not it is still trying.
       if await client.isReady() { throw MuxRuntimeError.portsTakenSinceProbing }
       guard run.hasMatchingProcess else { throw MuxRuntimeError.exitedBeforeReady }
-      try await Task.sleep(for: .milliseconds(100))
+      return .notYet
     }
-    throw MuxRuntimeError.readinessTimedOut
+    guard ready != nil else { throw MuxRuntimeError.readinessTimedOut }
   }
+
+  /// How long a freshly launched MUX is given to answer on its admin port.
+  private static let readinessTimeout = Duration.seconds(30)
 
   /// Two free ports, preferring the same pair for the same project so its URL stays stable.
   ///
@@ -170,12 +176,12 @@ struct MuxProcessController: Sendable {
   /// the same pair and lose again: retries pick at random so the two diverge.
   private func allocatePorts(
     seed: String,
-    attempt: Int
+    isFirstAttempt: Bool
   ) async throws -> (ingress: PortNumber, admin: PortNumber) {
     let portProbe = SystemPortProbe()
     let pool = (39_100...39_999).compactMap(PortNumber.init)
     let offset =
-      attempt == 0
+      isFirstAttempt
       ? seed.utf8.reduce(0) { ($0 &* 31 &+ Int($1)) % pool.count }
       : Int.random(in: 0..<pool.count)
     var free: [PortNumber] = []

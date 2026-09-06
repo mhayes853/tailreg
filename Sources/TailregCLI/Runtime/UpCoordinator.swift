@@ -500,14 +500,14 @@ struct UpCoordinator: Sendable {
     application: String
   ) async throws {
     let timeout = try MillisecondsSetting.applicationStartup.resolve(from: environment)
-    let clock = ContinuousClock()
-    let deadline = clock.now.advanced(by: timeout)
-    while clock.now < deadline {
-      if await portProbe.isListening(port: port) { return }
+    let listening = try await poll(within: timeout) {
+      if await portProbe.isListening(port: port) { return .ready(()) }
       if let process, process.hasExited { throw UpError.exitedBeforeReady(application) }
-      try await Task.sleep(for: .milliseconds(100))
+      return .notYet
     }
-    throw UpError.readinessTimedOut(application: application, port: port)
+    guard listening != nil else {
+      throw UpError.readinessTimedOut(application: application, port: port)
+    }
   }
 
   private func outputTasksFor(_ process: LaunchedProcess, name: String) -> [Task<Void, Never>] {

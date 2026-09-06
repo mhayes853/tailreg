@@ -1,4 +1,5 @@
 import Foundation
+import Operation
 
 #if canImport(Darwin)
   import Darwin
@@ -155,12 +156,17 @@ public struct ProcessTerminator<C: Clock>: Sendable where C.Instant.Duration == 
     observing observation: ProcessExitObservation,
     within limit: Duration
   ) async -> Bool {
-    let deadline = clock.now.advanced(by: limit)
-    while clock.now < deadline {
-      if hasExited(target, observing: observation) { return true }
-      guard (try? await clock.sleep(for: observation.pollInterval)) != nil else { break }
+    let exited = try? await poll(
+      within: limit,
+      every: .constant(OperationDuration(duration: observation.pollInterval)),
+      delayedBy: .clock(clock),
+      clock: clock
+    ) {
+      hasExited(target, observing: observation) ? .ready(()) : .notYet
     }
-    return hasExited(target, observing: observation)
+    // A cancelled sleep leaves the budget unspent, so the process still gets the look the
+    // deadline would have given it.
+    return exited != nil || hasExited(target, observing: observation)
   }
 
   private func hasExited(
