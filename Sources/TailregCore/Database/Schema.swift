@@ -430,5 +430,81 @@ public func tailregDatabaseMigrator() -> DatabaseMigrator {
     .execute(db)
   }
 
+  migrator.registerMigration("v8: record command and operation runs") { db in
+    try #sql(
+      """
+      CREATE TABLE "commandRuns" (
+        "id"          TEXT    NOT NULL PRIMARY KEY,
+        "projectID"   TEXT    REFERENCES "projects"("id") ON DELETE CASCADE,
+        "command"     TEXT    NOT NULL,
+        "pid"         INTEGER NOT NULL,
+        "startedAt"   TEXT    NOT NULL,
+        "completedAt" TEXT,
+        "outcome"     TEXT    NOT NULL,
+        "failure"     TEXT,
+
+        CHECK ("command" <> ''),
+        CHECK ("pid" > 0),
+        CHECK ("outcome" IN ('in-progress', 'complete', 'failed')),
+        CHECK (("outcome" = 'in-progress') = ("completedAt" IS NULL)),
+        CHECK (("failure" IS NULL) = ("outcome" <> 'failed'))
+      ) STRICT
+      """
+    )
+    .execute(db)
+
+    try #sql(
+      """
+      CREATE INDEX "commandRuns_project"
+        ON "commandRuns" ("projectID", "startedAt" DESC)
+      """
+    )
+    .execute(db)
+
+    // Every attempt an operation made, folded into the run it belonged to. A poll that ticks
+    // three hundred times is three hundred attempts at one thing, not three hundred things, and
+    // the row that says so is the one a reader wants.
+    try #sql(
+      """
+      CREATE TABLE "operationRuns" (
+        "id"                   TEXT    NOT NULL PRIMARY KEY,
+        "commandRunID"         TEXT    NOT NULL
+          REFERENCES "commandRuns"("id") ON DELETE CASCADE,
+        "parentID"             TEXT    REFERENCES "operationRuns"("id") ON DELETE CASCADE,
+        "operation"            TEXT    NOT NULL,
+        "attempts"             INTEGER NOT NULL,
+        "durationMilliseconds" INTEGER NOT NULL,
+        "startedAt"            TEXT    NOT NULL,
+        "outcome"              TEXT    NOT NULL,
+        "failure"              TEXT,
+
+        CHECK ("operation" <> ''),
+        CHECK ("attempts" > 0),
+        CHECK ("durationMilliseconds" >= 0),
+        CHECK ("outcome" IN ('complete', 'failed')),
+        CHECK (("failure" IS NULL) = ("outcome" <> 'failed')),
+        CHECK ("parentID" <> "id")
+      ) STRICT
+      """
+    )
+    .execute(db)
+
+    try #sql(
+      """
+      CREATE INDEX "operationRuns_command"
+        ON "operationRuns" ("commandRunID", "startedAt")
+      """
+    )
+    .execute(db)
+
+    try #sql(
+      """
+      CREATE INDEX "operationRuns_parent"
+        ON "operationRuns" ("parentID", "startedAt")
+      """
+    )
+    .execute(db)
+  }
+
   return migrator
 }

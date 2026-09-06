@@ -78,6 +78,16 @@ struct DownCoordinator: Sendable {
   @discardableResult
   func run(_ request: DownRequest) async throws -> DownResult {
     let database = try openTailregDatabase(path: databasePath)
+    return try await recordingCommandRun("down", in: database) { recorder in
+      try await perform(request, database: database, recorder: recorder)
+    }
+  }
+
+  private func perform(
+    _ request: DownRequest,
+    database: any DatabaseWriter,
+    recorder: OperationRecorder
+  ) async throws -> DownResult {
     let terminator = try ProcessTerminator(environment: environment)
 
     guard
@@ -90,6 +100,8 @@ struct DownCoordinator: Sendable {
       await console.write("nothing is running for this project")
       return DownResult(projectName: "", applications: [], runtime: nil, bindings: [])
     }
+
+    await recorder.attach(project: project.record.id)
 
     // Everything that changes a MUX, a route, a binding or a process is serialized here, and the
     // runtime is left in its final state before the lock is released. Nothing else is guaranteed

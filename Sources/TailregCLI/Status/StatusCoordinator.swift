@@ -46,12 +46,23 @@ struct StatusCoordinator: Sendable {
 
   func run(_ request: StatusRequest) async throws -> StatusReport {
     let database = try openTailregDatabase(path: databasePath)
+    return try await recordingCommandRun("status", in: database) { recorder in
+      try await report(request, database: database, recorder: recorder)
+    }
+  }
+
+  private func report(
+    _ request: StatusRequest,
+    database: any DatabaseWriter,
+    recorder: OperationRecorder
+  ) async throws -> StatusReport {
     guard request.allProjects else {
       let project = try await ResolvedProject.inspect(
         database: database,
         explicitPath: request.projectPath,
         currentDirectory: currentDirectory
       )
+      if let record = project.record { await recorder.attach(project: record.id) }
       return StatusReport(projects: [try await status(of: project, database: database)])
     }
 

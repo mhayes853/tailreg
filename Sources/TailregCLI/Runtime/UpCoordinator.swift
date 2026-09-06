@@ -79,12 +79,24 @@ struct UpCoordinator: Sendable {
     onReady: @Sendable (UpResult) async -> Void = { _ in }
   ) async throws -> UpResult {
     let database = try openTailregDatabase(path: databasePath)
+    return try await recordingCommandRun("up", in: database) { recorder in
+      try await reconcile(request, database: database, recorder: recorder, onReady: onReady)
+    }
+  }
+
+  private func reconcile(
+    _ request: UpRequest,
+    database: any DatabaseWriter,
+    recorder: OperationRecorder,
+    onReady: @Sendable (UpResult) async -> Void
+  ) async throws -> UpResult {
     let terminator = try ProcessTerminator(environment: environment)
     let project = try await ResolvedProject.resolve(
       database: database,
       explicitPath: request.projectPath,
       currentDirectory: currentDirectory
     )
+    await recorder.attach(project: project.record.id)
     try await database.write { database in
       try AppRunRecord.reclaimAbandoned(for: project.record.id, in: database)
     }
