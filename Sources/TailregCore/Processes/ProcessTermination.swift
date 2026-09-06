@@ -156,17 +156,25 @@ public struct ProcessTerminator<C: Clock>: Sendable where C.Instant.Duration == 
     observing observation: ProcessExitObservation,
     within limit: Duration
   ) async -> Bool {
-    let exited = try? await poll(
+    let exited: Void? = try? await poll(
+      $processHasExited(target, observing: observation),
       within: limit,
       every: .constant(OperationDuration(duration: observation.pollInterval)),
       delayedBy: .clock(clock),
       clock: clock
-    ) {
-      hasExited(target, observing: observation) ? .ready(()) : .notYet
-    }
+    )
     // A cancelled sleep leaves the budget unspent, so the process still gets the look the
     // deadline would have given it.
     return exited != nil || hasExited(target, observing: observation)
+  }
+
+  /// One look at whether the target has exited.
+  @OperationRequest
+  private func processHasExited(
+    _ target: TerminationTarget,
+    observing observation: ProcessExitObservation
+  ) async -> PollAttempt<Void> {
+    self.hasExited(target, observing: observation) ? .ready(()) : .notYet
   }
 
   private func hasExited(

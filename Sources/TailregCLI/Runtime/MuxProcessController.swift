@@ -157,15 +157,25 @@ struct MuxProcessController: Sendable {
   /// taken it in between, and publishing routes through that one would write them into a runtime
   /// this project does not own.
   private func waitUntilReady(_ run: MuxRunRecord, as muxID: UUIDV7) async throws {
-    let client = MuxAdminClient(port: run.adminPort)
-    let ready: Void? = try await poll(within: Self.readinessTimeout) {
-      if await client.isReady(as: muxID) { return .ready(()) }
-      // Someone else has the port. Ours cannot have it, whether or not it is still trying.
-      if await client.isReady() { throw MuxRuntimeError.portsTakenSinceProbing }
-      guard run.hasMatchingProcess else { throw MuxRuntimeError.exitedBeforeReady }
-      return .notYet
-    }
+    let ready: Void? = try await poll(
+      $muxAnswers(MuxAdminClient(port: run.adminPort), for: run, as: muxID),
+      within: Self.readinessTimeout
+    )
     guard ready != nil else { throw MuxRuntimeError.readinessTimedOut }
+  }
+
+  /// One look at whether the MUX this invocation started is answering its admin port.
+  @OperationRequest
+  private func muxAnswers(
+    _ client: MuxAdminClient,
+    for run: MuxRunRecord,
+    as muxID: UUIDV7
+  ) async throws -> PollAttempt<Void> {
+    if await client.isReady(as: muxID) { return .ready(()) }
+    // Someone else has the port. Ours cannot have it, whether or not it is still trying.
+    if await client.isReady() { throw MuxRuntimeError.portsTakenSinceProbing }
+    guard run.hasMatchingProcess else { throw MuxRuntimeError.exitedBeforeReady }
+    return .notYet
   }
 
   /// How long a freshly launched MUX is given to answer on its admin port.

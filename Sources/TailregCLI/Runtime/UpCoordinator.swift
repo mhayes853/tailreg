@@ -1,4 +1,5 @@
 import Foundation
+import Operation
 import SQLiteData
 import TailregCore
 import TailregMultiplexer
@@ -500,14 +501,25 @@ struct UpCoordinator: Sendable {
     application: String
   ) async throws {
     let timeout = try MillisecondsSetting.applicationStartup.resolve(from: environment)
-    let listening: Void? = try await poll(within: timeout) {
-      if await portProbe.isListening(port: port) { return .ready(()) }
-      if let process, process.hasExited { throw UpError.exitedBeforeReady(application) }
-      return .notYet
-    }
+    let listening: Void? = try await poll(
+      $portAnswers(port, of: process, for: application),
+      within: timeout
+    )
     guard listening != nil else {
       throw UpError.readinessTimedOut(application: application, port: port)
     }
+  }
+
+  /// One look at whether the application's declared port has started answering.
+  @OperationRequest
+  private func portAnswers(
+    _ port: PortNumber,
+    of process: LaunchedProcess?,
+    for application: String
+  ) async throws -> PollAttempt<Void> {
+    if await portProbe.isListening(port: port) { return .ready(()) }
+    if let process, process.hasExited { throw UpError.exitedBeforeReady(application) }
+    return .notYet
   }
 
   private func outputTasksFor(_ process: LaunchedProcess, name: String) -> [Task<Void, Never>] {

@@ -1,4 +1,5 @@
 import Foundation
+import Operation
 import TailregCore
 
 /// Re-executes this invocation with its standard streams redirected to a state-directory log.
@@ -35,18 +36,10 @@ enum BackgroundLauncher {
     try? log.close()
 
     defer { try? FileManager.default.removeItem(at: readyURL) }
-    let ready = try await poll(within: startupTimeout) {
-      if FileManager.default.fileExists(atPath: readyURL.path) {
-        return .ready((try? String(contentsOf: readyURL, encoding: .utf8)) ?? "")
-      }
-      guard process.isRunning else {
-        throw BackgroundLaunchError.exited(
-          status: process.terminationStatus,
-          logPath: logURL.path
-        )
-      }
-      return .notYet
-    }
+    let ready = try await poll(
+      $childReported(at: readyURL, loggingTo: logURL, from: process),
+      within: startupTimeout
+    )
     guard let ready else {
       if process.isRunning { process.terminate() }
       throw BackgroundLaunchError.timedOut(logPath: logURL.path)
@@ -55,6 +48,27 @@ enum BackgroundLauncher {
       "Tailreg started in the background (pid \(process.processIdentifier))."
       + (ready.isEmpty ? "\n" : "\n\(ready)\n")
     try FileHandle.standardOutput.write(contentsOf: Data(message.utf8))
+  }
+}
+
+extension BackgroundLauncher {
+  /// One look at whether the child has written its readiness file.
+  @OperationRequest
+  static func childReported(
+    at readyURL: URL,
+    loggingTo logURL: URL,
+    from process: Process
+  ) async throws -> PollAttempt<String> {
+    if FileManager.default.fileExists(atPath: readyURL.path) {
+      return .ready((try? String(contentsOf: readyURL, encoding: .utf8)) ?? "")
+    }
+    guard process.isRunning else {
+      throw BackgroundLaunchError.exited(
+        status: process.terminationStatus,
+        logPath: logURL.path
+      )
+    }
+    return .notYet
   }
 }
 

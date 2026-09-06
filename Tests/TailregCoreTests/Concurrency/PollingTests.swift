@@ -53,10 +53,7 @@ struct `Polling tests` {
     let clock = ManualClock()
     let counter = AttemptCounter()
 
-    let value = try await poll(within: .seconds(30), clock: clock) {
-      counter.record()
-      return .ready(42)
-    }
+    let value = try await poll($isReady(counter), within: .seconds(30), clock: clock)
 
     #expect(value == 42)
     #expect(counter.count == 1)
@@ -69,14 +66,12 @@ struct `Polling tests` {
     let counter = AttemptCounter()
 
     let value: Int? = try await poll(
+      $isNeverReady(counter),
       within: .milliseconds(100),
       every: .constant(.milliseconds(25)),
       delayedBy: .clock(clock),
       clock: clock
-    ) {
-      counter.record()
-      return .notYet
-    }
+    )
 
     #expect(value == nil)
     #expect(counter.count == 5)
@@ -86,10 +81,11 @@ struct `Polling tests` {
   func `Attempts Once Even When There Is No Budget To Wait In`() async throws {
     let counter = AttemptCounter()
 
-    let value: Int? = try await poll(within: .zero, delayedBy: .noDelay) {
-      counter.record()
-      return .notYet
-    }
+    let value: Int? = try await poll(
+      $isNeverReady(counter),
+      within: .zero,
+      delayedBy: .noDelay
+    )
 
     #expect(value == nil)
     #expect(counter.count == 1)
@@ -101,14 +97,12 @@ struct `Polling tests` {
     let counter = AttemptCounter()
 
     let value: Int? = try await poll(
+      $isNeverReady(counter),
       within: .milliseconds(100),
       every: .constant(.seconds(30)),
       delayedBy: .clock(clock),
       clock: clock
-    ) {
-      counter.record()
-      return .notYet
-    }
+    )
 
     #expect(value == nil)
     #expect(counter.count == 2)
@@ -120,11 +114,7 @@ struct `Polling tests` {
     let counter = AttemptCounter()
 
     await #expect(throws: AttemptFailure(attempt: 3)) {
-      try await poll(within: .seconds(30), delayedBy: .noDelay) {
-        let attempt = counter.record()
-        guard attempt < 3 else { throw AttemptFailure(attempt: attempt) }
-        return PollAttempt<Int>.notYet
-      }
+      try await poll($failsOnAttempt(counter, 3), within: .seconds(30), delayedBy: .noDelay)
     }
 
     #expect(counter.count == 3)
@@ -134,11 +124,91 @@ struct `Polling tests` {
   func `Stops Attempting As Soon As The Awaited State Arrives`() async throws {
     let counter = AttemptCounter()
 
-    let value = try await poll(within: .seconds(30), delayedBy: .noDelay) {
-      counter.record() < 3 ? .notYet : .ready("ready")
-    }
+    let value = try await poll(
+      $isReadyOnAttempt(counter, 3),
+      within: .seconds(30),
+      delayedBy: .noDelay
+    )
 
     #expect(value == "ready")
     #expect(counter.count == 3)
+  }
+
+  @Test
+  func `Runs Every Attempt Through The Operation Transforms In Scope`() async throws {
+    let attempts = AttemptCounter()
+    let transformed = AttemptCounter()
+
+    let value = try await withOperationTransform(CountingTransform(counter: transformed)) {
+      try await poll(
+        $isReadyOnAttempt(attempts, 3),
+        within: .seconds(30),
+        delayedBy: .noDelay
+      )
+    }
+
+    #expect(value == "ready")
+    #expect(attempts.count == 3)
+    #expect(transformed.count == 3)
+  }
+}
+
+// MARK: - Attempts
+
+@OperationRequest
+private func isReady(_ counter: AttemptCounter) async throws -> PollAttempt<Int> {
+  counter.record()
+  return .ready(42)
+}
+
+@OperationRequest
+private func isNeverReady(_ counter: AttemptCounter) async throws -> PollAttempt<Int> {
+  counter.record()
+  return .notYet
+}
+
+@OperationRequest
+private func failsOnAttempt(
+  _ counter: AttemptCounter,
+  _ attempt: Int
+) async throws -> PollAttempt<Int> {
+  let recorded = counter.record()
+  guard recorded < attempt else { throw AttemptFailure(attempt: recorded) }
+  return .notYet
+}
+
+@OperationRequest
+private func isReadyOnAttempt(
+  _ counter: AttemptCounter,
+  _ attempt: Int
+) async throws -> PollAttempt<String> {
+  counter.record() < attempt ? .notYet : .ready("ready")
+}
+
+// MARK: - Transform
+
+/// Counts how many operation runs it sees, so that a transform reaching each attempt is
+/// observable.
+private struct CountingTransform: OperationTransform {
+  let counter: AttemptCounter
+
+  func apply<Operation: OperationRequest>(
+    to operation: Operation
+  ) -> any OperationRequest<Operation.Value, Operation.Failure> {
+    operation.modifier(CountingModifier(counter: self.counter))
+  }
+}
+
+private struct CountingModifier<Operation: OperationRequest>: OperationModifier, Sendable {
+  let counter: AttemptCounter
+
+  func run(
+    isolation: isolated (any Actor)?,
+    in context: OperationContext,
+    using operation: Operation,
+    with continuation: OperationContinuation<Operation.Value, Operation.Failure>
+  ) async throws(Operation.Failure) -> Operation.Value {
+    self.counter.record()
+    return try await operation.run(isolation: isolation, in: context, with: continuation)
   }
 }
