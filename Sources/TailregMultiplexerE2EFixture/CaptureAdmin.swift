@@ -10,7 +10,8 @@ func captureApplication(
 ) -> Application<RouterResponder<BasicRequestContext>> {
   let router = Router()
   router.get("/captures/:route") { _, context in
-    let route = try context.parameters.require("route")
+    let raw = try context.parameters.require("route")
+    guard let route = MuxRouteName(rawValue: raw) else { throw HTTPError(.notFound) }
     await recorder.flush()
 
     return try await database.read { db in
@@ -40,7 +41,7 @@ func captureApplication(
         uniqueKeysWithValues: classifications.map { ($0.exchangeID, $0) }
       )
       return FixtureCaptureResponse(
-        route: route,
+        route: raw,
         exchanges: exchanges.map { exchange in
           let requestBody = requestBodiesByExchange[exchange.id]
           let responseBody = responseBodiesByExchange[exchange.id]

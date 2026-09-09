@@ -1,4 +1,5 @@
 import Foundation
+import Operation
 import SQLiteData
 import TailregCore
 import UUIDV7
@@ -20,50 +21,64 @@ struct MuxProcessController: Sendable {
   /// Cookies are marked secure only for a tailnet runtime: the loopback listener is served over
   /// plain HTTP, where a secure cookie would never be sent back.
   func ensureRunning(for project: ProjectRecord, exposure: ProjectExposure) async throws
-    -> (MuxRunRecord, Bool)
+    -> EnsuredMuxRuntime
   {
-    let lock = FileLock(path: databasePath + ".runtime.lock")
-    return try await lock.withLock(.exclusive) {
-      if var existing = try await liveRun(for: project.id) {
-        let client = MuxAdminClient(port: existing.adminPort)
-        if existing.hasMatchingProcess, await client.isReady(as: project.muxID) {
-          // Exposure only ever widens. A local runtime that is now being bound to the tailnet is
-          // recorded as such, but a tailnet runtime asked for locally stays tailnet: its binding
-          // still exists and still serves, and forgetting it here is how it would leak.
-          if existing.exposure == .local, exposure == .tailnet {
-            try await setExposure(.tailnet, of: existing.id)
-            existing.exposure = .tailnet
-          }
-          return (existing, false)
-        }
-        try await end(existing.id)
-      }
-
-      var lastFailure: any Error = MuxRuntimeError.noLocalPorts
-      for attempt in 0..<Self.launchAttempts {
-        do {
-          return (try await launch(project, exposure: exposure, attempt: attempt), true)
-        } catch let failure as MuxRuntimeError where failure.isWorthRetrying {
-          lastFailure = failure
-        }
-      }
-      throw lastFailure
-    }
+    try await #run($ensureMuxRunning(for: project, exposure: exposure))
   }
 
-  /// The number of port ranges tried before giving up.
+  /// The runtime lock is taken inside the operation rather than around it, so the wait for it is
+  /// attributed to bringing the MUX up rather than disappearing before the work starts.
+  @OperationRequest
+  private func ensureMuxRunning(
+    for project: ProjectRecord,
+    exposure: ProjectExposure
+  ) async throws -> EnsuredMuxRuntime {
+    return try await FileLock.runtime(forDatabaseAt: databasePath)
+      .withLock(.exclusive) {
+        if var existing = try await liveRun(for: project.id) {
+          let client = MuxAdminClient(port: existing.adminPort)
+          if existing.hasMatchingProcess, await client.isReady(as: project.muxID) {
+            // Exposure only ever widens. A local runtime that is now being bound to the tailnet is
+            // recorded as such, but a tailnet runtime asked for locally stays tailnet: its binding
+            // still exists and still serves, and forgetting it here is how it would leak.
+            if existing.exposure == .local, exposure == .tailnet {
+              try await setExposure(.tailnet, of: existing.id)
+              existing.exposure = .tailnet
+            }
+            return EnsuredMuxRuntime(run: existing, wasStarted: false)
+          }
+          try await end(existing.id)
+        }
+
+        let run = try await #run(
+          $launchMux(project, exposure: exposure)
+            .retry(limit: Self.launchRetries) { error, _ in
+              (error as? MuxRuntimeError)?.isWorthRetrying == true
+            }
+            .backoff(.exponential(.milliseconds(25)).jittered())
+        )
+        return EnsuredMuxRuntime(run: run, wasStarted: true)
+      }
+  }
+
+  /// The number of further port ranges tried before giving up.
   ///
   /// A port is probed and then bound, and nothing holds it in between: another MUX starting at the
   /// same moment can take it. Losing that race is ordinary, so it is retried elsewhere in the pool
-  /// rather than reported.
-  private static let launchAttempts = 5
+  /// rather than reported. The backoff is jittered because the loser of one race is otherwise
+  /// perfectly placed to lose the next one to the same opponent.
+  private static let launchRetries = 4
 
-  private func launch(
+  @OperationRequest
+  private func launchMux(
     _ project: ProjectRecord,
     exposure: ProjectExposure,
-    attempt: Int
+    context: OperationContext
   ) async throws -> MuxRunRecord {
-    let ports = try await allocatePorts(seed: project.rootPath, attempt: attempt)
+    let ports = try await allocatePorts(
+      seed: project.rootPath,
+      isFirstAttempt: context.isFirstRunAttempt
+    )
     let process = Process()
     process.executableURL = executableURL
     process.arguments =
@@ -71,8 +86,8 @@ struct MuxProcessController: Sendable {
         "_mux-run",
         "--database-path", databasePath,
         "--mux-id", project.muxID.uuidString,
-        "--ingress-port", String(ports.ingress),
-        "--admin-port", String(ports.admin)
+        "--ingress-port", ports.ingress.description,
+        "--admin-port", ports.admin.description
       ] + (exposure == .tailnet ? [] : ["--insecure-cookies"])
     process.standardInput = FileHandle.nullDevice
 
@@ -89,7 +104,7 @@ struct MuxProcessController: Sendable {
     let run = MuxRunRecord(
       projectID: project.id,
       pid: Int(process.processIdentifier),
-      processStartedAt: processStartTime(of: process.processIdentifier),
+      processStartedAt: RecordedProcess(observing: process.processIdentifier)?.startedAt,
       ingressPort: ports.ingress,
       adminPort: ports.admin,
       exposure: exposure
@@ -118,6 +133,11 @@ struct MuxProcessController: Sendable {
   /// down.
   @discardableResult
   func stop(_ run: MuxRunRecord) async throws -> TerminationOutcome {
+    try await #run($stopMux(run))
+  }
+
+  @OperationRequest
+  private func stopMux(_ run: MuxRunRecord) async throws -> TerminationOutcome {
     var outcome = TerminationOutcome.alreadyExited
     if run.hasMatchingProcess {
       outcome = await terminator.terminate(.process(pid_t(run.pid)), observing: .observed)
@@ -152,16 +172,29 @@ struct MuxProcessController: Sendable {
   /// taken it in between, and publishing routes through that one would write them into a runtime
   /// this project does not own.
   private func waitUntilReady(_ run: MuxRunRecord, as muxID: UUIDV7) async throws {
-    let client = MuxAdminClient(port: run.adminPort)
-    for _ in 0..<300 {
-      if await client.isReady(as: muxID) { return }
-      // Someone else has the port. Ours cannot have it, whether or not it is still trying.
-      if await client.isReady() { throw MuxRuntimeError.portsTakenSinceProbing }
-      guard run.hasMatchingProcess else { throw MuxRuntimeError.exitedBeforeReady }
-      try await Task.sleep(for: .milliseconds(100))
-    }
-    throw MuxRuntimeError.readinessTimedOut
+    let ready: Void? = try await poll(
+      $muxAnswers(MuxAdminClient(port: run.adminPort), for: run, as: muxID),
+      within: Self.readinessTimeout
+    )
+    guard ready != nil else { throw MuxRuntimeError.readinessTimedOut }
   }
+
+  /// One look at whether the MUX this invocation started is answering its admin port.
+  @OperationRequest
+  private func muxAnswers(
+    _ client: MuxAdminClient,
+    for run: MuxRunRecord,
+    as muxID: UUIDV7
+  ) async throws -> PollAttempt<Void> {
+    if await client.isReady(as: muxID) { return .ready(()) }
+    // Someone else has the port. Ours cannot have it, whether or not it is still trying.
+    if await client.isReady() { throw MuxRuntimeError.portsTakenSinceProbing }
+    guard run.hasMatchingProcess else { throw MuxRuntimeError.exitedBeforeReady }
+    return .notYet
+  }
+
+  /// How long a freshly launched MUX is given to answer on its admin port.
+  private static let readinessTimeout = Duration.seconds(30)
 
   /// Two free ports, preferring the same pair for the same project so its URL stays stable.
   ///
@@ -170,25 +203,29 @@ struct MuxProcessController: Sendable {
   /// the same pair and lose again: retries pick at random so the two diverge.
   private func allocatePorts(
     seed: String,
-    attempt: Int
-  ) async throws -> (ingress: Int, admin: Int) {
+    isFirstAttempt: Bool
+  ) async throws -> (ingress: PortNumber, admin: PortNumber) {
     let portProbe = SystemPortProbe()
-    let pool = Array(39_100...39_999)
+    let pool = (39_100...39_999).compactMap(PortNumber.init)
     let offset =
-      attempt == 0
+      isFirstAttempt
       ? seed.utf8.reduce(0) { ($0 &* 31 &+ Int($1)) % pool.count }
       : Int.random(in: 0..<pool.count)
-    var free: [Int] = []
+    var free: [PortNumber] = []
     for index in 0..<pool.count {
       let candidate = pool[(offset + index) % pool.count]
-      guard let port = PortNumber(candidate), !(await portProbe.isListening(port: port)) else {
-        continue
-      }
+      guard !(await portProbe.isListening(port: candidate)) else { continue }
       free.append(candidate)
       if free.count == 2 { return (free[0], free[1]) }
     }
     throw MuxRuntimeError.noLocalPorts
   }
+}
+
+/// The project's MUX runtime, and whether this invocation is what started it.
+struct EnsuredMuxRuntime: Sendable {
+  let run: MuxRunRecord
+  let wasStarted: Bool
 }
 
 enum MuxRuntimeError: Error, CustomStringConvertible {

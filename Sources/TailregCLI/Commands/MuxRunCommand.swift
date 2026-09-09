@@ -13,8 +13,8 @@ struct MuxRunCommand: AsyncParsableCommand {
 
   @Option(name: .long) var databasePath: String
   @Option(name: .long) var muxID: String
-  @Option(name: .long) var ingressPort: Int
-  @Option(name: .long) var adminPort: Int
+  @Option(name: .long) var ingressPort: PortNumber
+  @Option(name: .long) var adminPort: PortNumber
   @Flag(name: .long) var insecureCookies = false
 
   mutating func run() async throws {
@@ -31,10 +31,7 @@ struct MuxRunCommand: AsyncParsableCommand {
         id: id,
         ingressPort: ingressPort,
         unmatchedPathPolicy: .lastSelectedRouteCompatibility,
-        routingCookieName: insecureCookies
-          ? "tailreg-route-\(id.uuidString.lowercased())"
-          : nil,
-        secureCookies: !insecureCookies
+        publicScheme: insecureCookies ? .http : .https
       ),
       database: database
     )

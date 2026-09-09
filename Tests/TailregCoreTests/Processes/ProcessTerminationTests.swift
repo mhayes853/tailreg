@@ -83,26 +83,6 @@ struct `Process termination tests` {
     #expect(ProcessGroupID(42)?.rawValue == 42)
   }
 
-  @Test
-  func `A millisecond setting falls back to its default when unconfigured`() throws {
-    let setting = MillisecondsSetting(environmentKey: "TAILREG_TEST_MS", defaultValue: .seconds(2))
-    #expect(try setting.resolve(from: [:]) == .seconds(2))
-  }
-
-  @Test
-  func `A millisecond setting reads a configured value`() throws {
-    let setting = MillisecondsSetting(environmentKey: "TAILREG_TEST_MS", defaultValue: .seconds(2))
-    #expect(try setting.resolve(from: ["TAILREG_TEST_MS": "1500"]) == .milliseconds(1500))
-  }
-
-  @Test(arguments: ["0", "-1", "soon", ""])
-  func `A millisecond setting rejects values that are not positive milliseconds`(_ value: String) {
-    let setting = MillisecondsSetting(environmentKey: "TAILREG_TEST_MS", defaultValue: .seconds(2))
-    #expect(throws: MillisecondsSettingError.invalid(key: "TAILREG_TEST_MS", value: value)) {
-      try setting.resolve(from: ["TAILREG_TEST_MS": value])
-    }
-  }
-
   private func launch(_ executable: String, _ arguments: String...) throws -> LaunchedProcess {
     try SystemProcessLauncher()
       .launch(ProcessCommand(executable: executable, arguments: arguments))

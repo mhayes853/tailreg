@@ -4,16 +4,16 @@ import TailregCore
 public struct MuxPathPolicy: Equatable, Sendable {
   public init() {}
 
-  public func publicPath(route: String, remainder: String = "/") -> String {
+  public func publicPath(route: MuxRouteName, remainder: String = "/") -> String {
     join("/\(route)", normalizedRemainder(remainder))
   }
 
-  public func forwardedPrefix(route: String) -> String {
+  public func forwardedPrefix(route: MuxRouteName) -> String {
     join("/\(route)")
   }
 
   public func upstreamPath(
-    route: String,
+    route: MuxRouteName,
     remainder: String,
     mode: MuxRoutePathMode
   ) -> String {

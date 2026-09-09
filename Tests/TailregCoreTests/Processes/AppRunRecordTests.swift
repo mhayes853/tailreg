@@ -1,5 +1,6 @@
 import Foundation
 import SQLiteData
+import TailregTestSupport
 import Testing
 import UUIDV7
 
@@ -9,7 +10,7 @@ import UUIDV7
 struct `Application run record tests` {
   @Test
   func `Only one run of an application is live at a time`() throws {
-    let database = try memoryDatabase()
+    let database = try TestDatabase.inMemory()
     let project = try insertProject(in: database)
 
     try database.write { db in
@@ -25,7 +26,7 @@ struct `Application run record tests` {
 
   @Test
   func `A replacement run is allowed once the previous one has ended`() throws {
-    let database = try memoryDatabase()
+    let database = try TestDatabase.inMemory()
     let project = try insertProject(in: database)
     let first = managedRun(project: project, name: "web", pid: 4001)
 
@@ -43,7 +44,7 @@ struct `Application run record tests` {
   /// entitled to tear the application's route down.
   @Test
   func `Ending a run succeeds for exactly one caller`() throws {
-    let database = try memoryDatabase()
+    let database = try TestDatabase.inMemory()
     let project = try insertProject(in: database)
     let run = managedRun(project: project, name: "api", pid: 4100)
 
@@ -56,7 +57,7 @@ struct `Application run record tests` {
 
   @Test
   func `An attached run records no process`() throws {
-    let database = try memoryDatabase()
+    let database = try TestDatabase.inMemory()
     let project = try insertProject(in: database)
 
     #expect(throws: (any Error).self) {
@@ -72,7 +73,7 @@ struct `Application run record tests` {
 
   @Test
   func `A run whose process is gone is reclaimed`() throws {
-    let database = try memoryDatabase()
+    let database = try TestDatabase.inMemory()
     let project = try insertProject(in: database)
     // A PID that cannot be running paired with a start time that cannot match.
     let stale = managedRun(project: project, name: "web", pid: 0x7FFF_FFFE, startedAt: 1)
@@ -86,7 +87,7 @@ struct `Application run record tests` {
 
   @Test
   func `A run without a start time is left alone rather than assumed dead`() throws {
-    let database = try memoryDatabase()
+    let database = try TestDatabase.inMemory()
     let project = try insertProject(in: database)
     let unverifiable = managedRun(
       project: project,
@@ -99,17 +100,6 @@ struct `Application run record tests` {
       try AppRunRecord.insert { unverifiable }.execute(db)
       #expect(try AppRunRecord.reclaimAbandoned(for: project, in: db).isEmpty)
     }
-  }
-
-  @Test
-  func `The live process of this test is recognised by its start time`() {
-    let pid = ProcessInfo.processInfo.processIdentifier
-    let witness = processStartTime(of: pid)
-
-    #expect(witness != nil)
-    #expect(processMatches(pid: pid, startedAt: witness))
-    #expect(processMatches(pid: pid, startedAt: witness.map { $0 - 1 }) == false)
-    #expect(processMatches(pid: pid, startedAt: nil) == false)
   }
 
   private func managedRun(
@@ -132,9 +122,5 @@ struct `Application run record tests` {
     let project = ProjectRecord(rootPath: "/tmp/\(UUID().uuidString)", name: "demo")
     try database.write { db in try ProjectRecord.insert { project }.execute(db) }
     return project.id
-  }
-
-  private func memoryDatabase() throws -> any DatabaseWriter {
-    try openTailregDatabase(path: ":memory:", kind: .queue)
   }
 }

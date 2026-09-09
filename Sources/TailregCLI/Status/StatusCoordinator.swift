@@ -1,4 +1,5 @@
 import Foundation
+import Operation
 import SQLiteData
 import TailregCore
 import TailregMultiplexer
@@ -27,13 +28,13 @@ struct StatusCoordinator: Sendable {
   private let databasePath: String
   private let currentDirectory: URL
   private let portProbe: any PortProbe
-  private let muxIsReady: @Sendable (Int) async -> Bool
+  private let muxIsReady: @Sendable (PortNumber) async -> Bool
 
   init(
     databasePath: String = defaultTailregDatabasePath(),
     currentDirectory: URL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath),
     portProbe: any PortProbe = SystemPortProbe(),
-    muxIsReady: @escaping @Sendable (Int) async -> Bool = { port in
+    muxIsReady: @escaping @Sendable (PortNumber) async -> Bool = { port in
       await MuxAdminClient(port: port).isReady()
     }
   ) {
@@ -45,12 +46,23 @@ struct StatusCoordinator: Sendable {
 
   func run(_ request: StatusRequest) async throws -> StatusReport {
     let database = try openTailregDatabase(path: databasePath)
+    return try await recordingCommandRun("status", in: database) { recorder in
+      try await report(request, database: database, recorder: recorder)
+    }
+  }
+
+  private func report(
+    _ request: StatusRequest,
+    database: any DatabaseWriter,
+    recorder: OperationRecorder
+  ) async throws -> StatusReport {
     guard request.allProjects else {
       let project = try await ResolvedProject.inspect(
         database: database,
         explicitPath: request.projectPath,
         currentDirectory: currentDirectory
       )
+      if let record = project.record { await recorder.attach(project: record.id) }
       return StatusReport(projects: [try await status(of: project, database: database)])
     }
 
@@ -165,7 +177,7 @@ struct StatusCoordinator: Sendable {
   private func muxStatus(of runtime: MuxRunRecord?) async -> MuxStatus {
     guard let runtime else { return MuxStatus(state: .notRunning) }
     let state: MuxStatus.State
-    if await muxIsReady(runtime.adminPort) {
+    if await #run($probeMux(adminPort: runtime.adminPort)) {
       state = .running
     } else if runtime.hasMatchingProcess {
       state = .unreachable
@@ -181,10 +193,19 @@ struct StatusCoordinator: Sendable {
     )
   }
 
+  /// One look at whether anything answers on the recorded admin port.
+  ///
+  /// The probe goes through the injected closure rather than building a client here, so what the
+  /// report says about a MUX can be tested without standing one up.
+  @OperationRequest
+  private func probeMux(adminPort: PortNumber) async -> Bool {
+    await muxIsReady(adminPort)
+  }
+
   private func baseURL(for runtime: MuxRunRecord?, binding: TailscaleBindingRecord?) -> URL? {
     guard let runtime else { return nil }
     switch runtime.exposure {
-    case .local: return URL(string: "http://127.0.0.1:\(runtime.ingressPort)/")
+    case .local: return .muxIngress(port: runtime.ingressPort)
     case .tailnet: return binding?.url
     }
   }
@@ -260,15 +281,24 @@ struct StatusCoordinator: Sendable {
   ) async -> ApplicationStatus.State {
     switch run.ownership {
     case .managed:
-      guard run.processStartedAt != nil else { return .unverified }
-      return run.hasMatchingProcess ? .running : .stale
+      switch run.process?.liveness {
+      case .running: return .running
+      case .gone: return .stale
+      case .unverifiable, nil: return .unverified
+      }
     case .attached:
-      guard let upstream = route.flatMap({ URL(string: $0.upstreamURL) }),
-        let host = upstream.host,
-        let port = upstream.listenerPort
-      else { return .unverified }
-      return await portProbe.isListening(host: host, port: port) ? .running : .unreachable
+      guard let upstream = Self.upstream(of: route?.upstreamURL) else { return .unverified }
+      return await #run($probeApplication(upstream: upstream)) ? .running : .unreachable
     }
+  }
+
+  /// One look at whether an attached run's upstream still answers.
+  ///
+  /// The decision about whether there is anything to probe stays with the caller, so this is
+  /// reached only for a run whose upstream is an address Tailreg could have published.
+  @OperationRequest
+  private func probeApplication(upstream: LoopbackURL) async -> Bool {
+    await portProbe.isListening(host: upstream.host, port: upstream.port)
   }
 
   private func routeStatus(of route: MuxRouteRecord, baseURL: URL?) -> RouteStatus {
@@ -296,48 +326,33 @@ struct StatusCoordinator: Sendable {
     isConfigured: Bool
   ) -> [StatusProblem] {
     var problems: [StatusProblem] = []
+    func note(_ subject: String, _ kind: StatusProblem.Kind, _ detail: String) {
+      problems.append(StatusProblem(subject: subject, kind: kind, detail: detail))
+    }
 
     if let runtime, runtime.exposure == .tailnet, bindings.isEmpty {
-      problems.append(
-        StatusProblem(
-          subject: "binding",
-          kind: .missing,
-          detail: "no live binding for ingress port \(runtime.ingressPort)"
-        )
-      )
+      note("binding", .missing, "no live binding for ingress port \(runtime.ingressPort)")
     }
     // A binding is kept by the runs that hold it and removed with the last of them, so one with
     // no holder is the trace of a teardown that never finished.
     let held = Set(runs.compactMap(\.bindingID))
     for binding in bindings where !held.contains(binding.id) {
-      problems.append(
-        StatusProblem(
-          subject: "binding",
-          kind: .unheldBinding,
-          detail:
-            "\(binding.url?.absoluteString ?? "tailnet port \(binding.tailnetPort)") is held by no application run"
-        )
+      note(
+        "binding",
+        .unheldBinding,
+        "\(binding.url?.absoluteString ?? "tailnet port \(binding.tailnetPort)") is held by no application run"
       )
     }
 
     switch mux.state {
     case .unreachable:
-      problems.append(
-        StatusProblem(
-          subject: "mux",
-          kind: .unreachable,
-          detail:
-            "alive as pid \(mux.pid ?? 0), not answering on admin port \(mux.adminPort ?? 0)"
-        )
+      note(
+        "mux",
+        .unreachable,
+        "alive as pid \(mux.pid ?? 0), not answering on admin port \(mux.adminPort?.description ?? "0")"
       )
     case .stale:
-      problems.append(
-        StatusProblem(
-          subject: "mux",
-          kind: .staleProcess,
-          detail: "recorded as running, but pid \(mux.pid ?? 0) is gone"
-        )
-      )
+      note("mux", .staleProcess, "recorded as running, but pid \(mux.pid ?? 0) is gone")
     case .running, .notRunning:
       break
     }
@@ -345,21 +360,16 @@ struct StatusCoordinator: Sendable {
     for application in applications {
       switch application.state {
       case .stale:
-        problems.append(
-          StatusProblem(
-            subject: application.name,
-            kind: .staleProcess,
-            detail: "pid \(application.pid ?? 0) is not the process that started it"
-          )
+        note(
+          application.name,
+          .staleProcess,
+          "pid \(application.pid ?? 0) is not the process that started it"
         )
       case .unreachable:
-        problems.append(
-          StatusProblem(
-            subject: application.name,
-            kind: .notListening,
-            detail:
-              "attached upstream \(authority(of: application.route)) is not listening"
-          )
+        note(
+          application.name,
+          .notListening,
+          "attached upstream \(authority(of: application.route)) is not listening"
         )
       case .running, .unverified, .stopped:
         break
@@ -368,14 +378,12 @@ struct StatusCoordinator: Sendable {
       // Only meaningful against a configuration. Without a `tailreg.toml` every application is
       // ad hoc, and reporting each one as unconfigured would be noise rather than a finding.
       if isConfigured, !application.configured, application.state != .stopped {
-        problems.append(
-          StatusProblem(
-            subject: application.name,
-            kind: .notConfigured,
-            detail: application.route == nil
-              ? "is running but is not in tailreg.toml"
-              : "has a live route but is not in tailreg.toml"
-          )
+        note(
+          application.name,
+          .notConfigured,
+          application.route == nil
+            ? "is running but is not in tailreg.toml"
+            : "has a live route but is not in tailreg.toml"
         )
       }
     }
@@ -384,13 +392,7 @@ struct StatusCoordinator: Sendable {
     // route with no owning run is the trace of an invocation that died between the two.
     let owned = Set(runs.compactMap(\.routeID))
     for route in routes where !owned.contains(route.id) {
-      problems.append(
-        StatusProblem(
-          subject: route.route,
-          kind: .orphanedRoute,
-          detail: "served with no application run to own it"
-        )
-      )
+      note(route.route.rawValue, .orphanedRoute, "served with no application run to own it")
     }
     return problems
   }
@@ -410,11 +412,19 @@ struct StatusCoordinator: Sendable {
 
   // MARK: - Upstreams
 
+  /// A route's upstream, when it is one Tailreg could have published.
+  ///
+  /// Routes are stored as text, so a row that names something other than a loopback listener is
+  /// possible; there is nothing to probe or name in that case, and saying so is better than
+  /// probing an address the runtime would never have created.
+  private static func upstream(of upstreamURL: String?) -> LoopbackURL? {
+    upstreamURL.flatMap(URL.init(string:)).flatMap(LoopbackURL.init)
+  }
+
   private func authority(of route: RouteStatus?) -> String {
-    guard let upstream = route.flatMap({ URL(string: $0.upstreamURL) }),
-      let host = upstream.host,
-      let port = upstream.listenerPort
-    else { return route?.upstreamURL ?? "the upstream" }
-    return "\(host):\(port)"
+    guard let upstream = Self.upstream(of: route?.upstreamURL) else {
+      return route?.upstreamURL ?? "the upstream"
+    }
+    return "\(upstream.host):\(upstream.port)"
   }
 }

@@ -31,7 +31,7 @@ struct ProjectStatus: Codable, Equatable, Sendable {
 struct BindingStatus: Codable, Equatable, Sendable {
   var id: UUIDV7
   var url: URL?
-  var tailnetPort: Int
+  var tailnetPort: PortNumber
   /// The live runs that keep this binding bound. Empty is a problem: teardown would have
   /// removed it.
   var holders: [String]
@@ -50,8 +50,8 @@ struct MuxStatus: Codable, Equatable, Sendable {
 
   var state: State
   var pid: Int? = nil
-  var ingressPort: Int? = nil
-  var adminPort: Int? = nil
+  var ingressPort: PortNumber? = nil
+  var adminPort: PortNumber? = nil
   var startedAt: Date? = nil
 }
 
@@ -105,18 +105,6 @@ struct StatusProblem: Codable, Equatable, Sendable {
     case notConfigured = "not-configured"
     case orphanedRoute = "orphaned-route"
     case unheldBinding = "unheld-binding"
-
-    var label: String {
-      switch self {
-      case .missing: "missing"
-      case .unreachable: "unreachable"
-      case .staleProcess: "stale process"
-      case .notListening: "not listening"
-      case .notConfigured: "not configured"
-      case .orphanedRoute: "orphaned route"
-      case .unheldBinding: "unheld binding"
-      }
-    }
   }
 
   var subject: String

@@ -119,7 +119,7 @@ struct StatusTextRenderer: Sendable {
       rows: bindings.map { binding in
         [
           binding.url?.absoluteString ?? "-",
-          String(binding.tailnetPort),
+          binding.tailnetPort.description,
           binding.holders.isEmpty ? "-" : binding.holders.joined(separator: ", ")
         ]
       }
@@ -134,8 +134,8 @@ struct StatusTextRenderer: Sendable {
         [
           mux.state.label,
           mux.pid.map(String.init) ?? "-",
-          mux.ingressPort.map(String.init) ?? "-",
-          mux.adminPort.map(String.init) ?? "-",
+          mux.ingressPort?.description ?? "-",
+          mux.adminPort?.description ?? "-",
           mux.startedAt.map { uptime(since: $0, now: now) } ?? "-"
         ]
       ]
@@ -204,6 +204,11 @@ struct StatusTextRenderer: Sendable {
   }
 }
 
+// MARK: - Display labels
+
+/// The wire spellings are hyphenated so that JSON and the schema can hold them; the tables spell
+/// them as English. Both live here, next to the only thing that reads them.
+
 extension MuxStatus.State {
   var label: String {
     switch self {
@@ -211,6 +216,20 @@ extension MuxStatus.State {
     case .unreachable: "unreachable"
     case .stale: "stale"
     case .notRunning: "not running"
+    }
+  }
+}
+
+extension StatusProblem.Kind {
+  var label: String {
+    switch self {
+    case .missing: "missing"
+    case .unreachable: "unreachable"
+    case .staleProcess: "stale process"
+    case .notListening: "not listening"
+    case .notConfigured: "not configured"
+    case .orphanedRoute: "orphaned route"
+    case .unheldBinding: "unheld binding"
     }
   }
 }

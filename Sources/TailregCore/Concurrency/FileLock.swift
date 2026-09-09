@@ -1,4 +1,5 @@
 import Foundation
+import Operation
 
 #if canImport(Darwin)
   import Darwin
@@ -7,7 +8,7 @@ import Foundation
 #endif
 
 public struct FileLock: Sendable {
-  public enum Mode {
+  public enum Mode: Hashable, Sendable {
     case shared
     case exclusive
 
@@ -40,6 +41,19 @@ public struct FileLock: Sendable {
     return try await operation()
   }
 
+  /// One attempt at taking the lock, without blocking on it.
+  @OperationRequest
+  private func tryLock(_ descriptor: Int32, _ mode: Mode) async throws -> PollAttempt<Int32> {
+    if flock(descriptor, mode.operation | LOCK_NB) == 0 { return .ready(descriptor) }
+
+    let code = errno
+    guard code == EWOULDBLOCK || code == EINTR else {
+      close(descriptor)
+      throw TailscaleError.lockUnavailable(path: self.path, detail: Self.errorDescription(code))
+    }
+    return .notYet
+  }
+
   private func acquire(
     _ mode: Mode,
     isolation: isolated (any Actor)?
@@ -51,26 +65,19 @@ public struct FileLock: Sendable {
       throw TailscaleError.lockUnavailable(path: path, detail: Self.errorDescription())
     }
 
-    var waited = Duration.zero
-    while true {
-      if flock(descriptor, mode.operation | LOCK_NB) == 0 { return descriptor }
-
-      let code = errno
-      guard code == EWOULDBLOCK || code == EINTR else {
-        close(descriptor)
-        throw TailscaleError.lockUnavailable(path: path, detail: Self.errorDescription(code))
-      }
-      guard waited < timeout else {
-        close(descriptor)
-        throw TailscaleError.lockUnavailable(
-          path: path,
-          detail: "timed out after \(timeout) waiting for another tailreg process"
-        )
-      }
-
-      try await Task.sleep(for: pollInterval)
-      waited += pollInterval
+    let acquired = try await poll(
+      $tryLock(descriptor, mode),
+      within: timeout,
+      every: .constant(OperationDuration(duration: pollInterval))
+    )
+    guard let acquired else {
+      close(descriptor)
+      throw TailscaleError.lockUnavailable(
+        path: path,
+        detail: "timed out after \(timeout) waiting for another tailreg process"
+      )
     }
+    return acquired
   }
 
   private func createLockDirectory() throws {

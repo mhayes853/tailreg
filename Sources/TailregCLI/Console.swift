@@ -3,9 +3,8 @@ import TailregCore
 
 /// Serialises everything the CLI prints, so lines from concurrent supervisors do not interleave.
 ///
-/// A global actor rather than an instance per coordinator: two instances would each be ordered
+/// One shared instance rather than one per coordinator: two instances would each be ordered
 /// internally and still interleave with each other on the same terminal.
-@globalActor
 actor Console {
   static let shared = Console()
 

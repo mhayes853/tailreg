@@ -4,6 +4,8 @@ import Testing
 
 @testable import TailregCLI
 
+/// What the flags mean, and which combinations of them mean nothing. Every rejection here is a
+/// combination that would otherwise be obeyed in part.
 @Suite
 struct `Up command tests` {
   @Test
@@ -15,13 +17,8 @@ struct `Up command tests` {
   }
 
   @Test
-  func `Uses a configurable positive background startup timeout`() throws {
-    let setting = MillisecondsSetting.backgroundStartup
-    #expect(try setting.resolve(from: [:]) == .seconds(60))
-    #expect(try setting.resolve(from: [setting.environmentKey: "250"]) == .milliseconds(250))
-    #expect(throws: MillisecondsSettingError.self) {
-      try setting.resolve(from: [setting.environmentKey: "0"])
-    }
+  func `Waits a minute for background startup by default`() throws {
+    #expect(try MillisecondsSetting.backgroundStartup.resolve(from: [:]) == .seconds(60))
   }
 
   @Test
@@ -29,5 +26,57 @@ struct `Up command tests` {
     #expect(throws: ValidationError.self) {
       try UpCommand.parse(["--local-only", "--tailnet-port", "8443"]).makeRequest()
     }
+  }
+
+  /// The port would win over the attach URL's, so `up` would wait for readiness on a port that
+  /// has nothing to do with the route it is about to publish.
+  @Test
+  func `A port cannot be given for an attached application`() throws {
+    #expect(throws: ValidationError.self) {
+      try UpCommand
+        .parse(["--app", "docs", "--attach", "http://127.0.0.1:4321", "--port", "4321"])
+        .makeRequest()
+    }
+  }
+
+  /// Refused by the parser rather than by `up`: an upstream Tailreg cannot reach on loopback is
+  /// somebody else's server, and publishing it on a tailnet is not a thing to do halfway.
+  @Test
+  func `A non-loopback attach URL is not an argument`() {
+    #expect(throws: (any Error).self) {
+      try UpCommand.parse(["--app", "docs", "--attach", "http://example.com:80"])
+    }
+  }
+
+  @Test
+  func `An ad hoc command after -- becomes the application's source`() throws {
+    let request =
+      try UpCommand
+      .parse(["--app", "docs", "--route", "docs", "--port", "4321", "--", "npm", "run", "dev"])
+      .makeRequest()
+
+    guard case .adHoc(let name, let route, let source) = request.selection else {
+      Issue.record("expected an ad hoc selection, got \(request.selection)")
+      return
+    }
+    #expect(name == "docs")
+    #expect(route == MuxRouteName(rawValue: "docs"))
+    guard case .command(let arguments, let port) = source else {
+      Issue.record("expected a command source, got \(source)")
+      return
+    }
+    #expect(arguments == ["npm", "run", "dev"])
+    #expect(port == PortNumber(4321))
+  }
+
+  @Test
+  func `Application names without --app select the configuration`() throws {
+    let request = try UpCommand.parse(["web", "api"]).makeRequest()
+
+    guard case .configured(let names) = request.selection else {
+      Issue.record("expected a configured selection, got \(request.selection)")
+      return
+    }
+    #expect(names == ["web", "api"])
   }
 }

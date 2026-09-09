@@ -1,4 +1,5 @@
 import Foundation
+import Operation
 import TailregCore
 import UUIDV7
 
@@ -25,19 +26,30 @@ struct TailnetEndpointController: TailnetEndpointRemoving {
   /// an existing binding's adds one rather than moving it, and each run holds exactly the
   /// binding it asked for.
   func ensure(
-    ingressPort: Int,
+    ingressPort: PortNumber,
     exposure: ProjectExposure,
     requestedPort: PortNumber? = nil
   ) async throws -> TailnetEndpoint {
+    try await #run(
+      $ensureEndpoint(ingressPort: ingressPort, exposure: exposure, requestedPort: requestedPort)
+    )
+  }
+
+  @OperationRequest
+  private func ensureEndpoint(
+    ingressPort: PortNumber,
+    exposure: ProjectExposure,
+    requestedPort: PortNumber?
+  ) async throws -> TailnetEndpoint {
     if exposure == .local {
-      return TailnetEndpoint(url: URL(string: "http://127.0.0.1:\(ingressPort)/")!, bindingID: nil)
+      return TailnetEndpoint(url: .muxIngress(port: ingressPort), bindingID: nil)
     }
 
     let binder = try makeBinder()
     let existing = try await binder.bindings()
       .first { binding in
         binding.localPort == ingressPort && binding.mountPath == "/"
-          && (requestedPort.map { $0.intValue == binding.tailnetPort } ?? true)
+          && (requestedPort.map { $0 == binding.tailnetPort } ?? true)
       }
     let binding: TailscaleBinding
     if let existing {
@@ -45,7 +57,7 @@ struct TailnetEndpointController: TailnetEndpointRemoving {
     } else {
       binding = try await binder.bind(
         localPort: ingressPort,
-        to: requestedPort.map { .explicit($0.intValue) } ?? .auto,
+        to: requestedPort.map { .explicit($0) } ?? .auto,
         mountPath: "/"
       )
     }
@@ -66,6 +78,16 @@ struct TailnetEndpointController: TailnetEndpointRemoving {
       searchPaths: searchPaths,
       databasePath: databasePath
     )
+  }
+}
+
+extension URL {
+  /// Where a project's MUX ingress answers on this machine.
+  ///
+  /// `up` returns it as the base URL of a `--local-only` runtime and `status` reports the same
+  /// address for one, so the two agree by construction rather than by both being written out.
+  static func muxIngress(port: PortNumber) -> URL {
+    URL(string: "http://127.0.0.1:\(port)/")!
   }
 }
 

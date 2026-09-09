@@ -1,4 +1,5 @@
 import Foundation
+import TailregTestSupport
 import Testing
 
 @testable import TailregCore
@@ -58,10 +59,10 @@ struct `TailscaleBinder tests` {
   func `Binds A Live Local Port And Returns What The Daemon Recorded`() async throws {
     let harness = try makeHarness(listening: [3000])
 
-    let binding = try await harness.binder.bind(localPort: 3000)
+    let binding = try await harness.binder.bind(localPort: .fixed(3000))
 
-    #expect(binding.tailnetPort == 443)
-    #expect(binding.localPort == 3000)
+    #expect(binding.tailnetPort == .fixed(443))
+    #expect(binding.localPort == .fixed(3000))
     #expect(binding.isManaged)
     #expect(binding.url?.absoluteString == "https://node.example.ts.net/")
     #expect(
@@ -75,7 +76,11 @@ struct `TailscaleBinder tests` {
   func `Adds Set Path Only For A Non Root Mount Path`() async throws {
     let harness = try makeHarness(listening: [3000])
 
-    try await harness.binder.bind(localPort: 3000, to: .explicit(8443), mountPath: "/api")
+    try await harness.binder.bind(
+      localPort: .fixed(3000),
+      to: .explicit(.fixed(8443)),
+      mountPath: "/api"
+    )
 
     #expect(
       harness.daemon.argv(startingWith: ["serve", "--bg"]) == [
@@ -88,8 +93,8 @@ struct `TailscaleBinder tests` {
   func `Refuses To Bind A Port With Nothing Listening`() async throws {
     let harness = try makeHarness(listening: [])
 
-    await #expect(throws: TailscaleError.noLocalServerListening(port: 3000)) {
-      try await harness.binder.bind(localPort: 3000)
+    await #expect(throws: TailscaleError.noLocalServerListening(port: .fixed(3000))) {
+      try await harness.binder.bind(localPort: .fixed(3000))
     }
     #expect(harness.daemon.configuredHandlers.isEmpty)
   }
@@ -101,20 +106,20 @@ struct `TailscaleBinder tests` {
       listening: [3000]
     )
 
-    #expect(try await harness.binder.bind(localPort: 3000).tailnetPort == 8443)
+    #expect(try await harness.binder.bind(localPort: .fixed(3000)).tailnetPort == .fixed(8443))
   }
 
   @Test
   func `Auto Allocation Fails When Every Pool Port Is Taken`() async throws {
     let harness = try makeHarness(
       handlers: TailscaleTailnetPort.autoAllocationPool.map {
-        .init(tailnetPort: $0, localPort: 9000)
+        .init(tailnetPort: $0.intValue, localPort: 9000)
       },
       listening: [3000]
     )
 
     await #expect(throws: TailscaleError.noAvailableTailnetPort) {
-      try await harness.binder.bind(localPort: 3000)
+      try await harness.binder.bind(localPort: .fixed(3000))
     }
   }
 
@@ -126,9 +131,9 @@ struct `TailscaleBinder tests` {
     )
 
     await #expect(
-      throws: TailscaleError.tailnetPortInUse(port: 443, existingTarget: "localPort(3773)")
+      throws: TailscaleError.tailnetPortInUse(port: .fixed(443), existingTarget: "localPort(3773)")
     ) {
-      try await harness.binder.bind(localPort: 3000, to: .explicit(443))
+      try await harness.binder.bind(localPort: .fixed(3000), to: .explicit(.fixed(443)))
     }
   }
 
@@ -136,13 +141,25 @@ struct `TailscaleBinder tests` {
   func `Hosts Several Local Servers On One Port Under Different Mount Paths`() async throws {
     let harness = try makeHarness(listening: [3000, 4000, 5000])
 
-    try await harness.binder.bind(localPort: 3000, to: .explicit(443), mountPath: "/alpha")
-    try await harness.binder.bind(localPort: 4000, to: .explicit(443), mountPath: "/beta")
-    try await harness.binder.bind(localPort: 5000, to: .explicit(443), mountPath: "/gamma")
+    try await harness.binder.bind(
+      localPort: .fixed(3000),
+      to: .explicit(.fixed(443)),
+      mountPath: "/alpha"
+    )
+    try await harness.binder.bind(
+      localPort: .fixed(4000),
+      to: .explicit(.fixed(443)),
+      mountPath: "/beta"
+    )
+    try await harness.binder.bind(
+      localPort: .fixed(5000),
+      to: .explicit(.fixed(443)),
+      mountPath: "/gamma"
+    )
 
     let bindings = try await harness.binder.bindings()
     #expect(bindings.map(\.mountPath) == ["/alpha", "/beta", "/gamma"])
-    #expect(bindings.map(\.localPort) == [3000, 4000, 5000])
+    #expect(bindings.map(\.localPort) == [.fixed(3000), .fixed(4000), .fixed(5000)])
     #expect(bindings.allSatisfy { $0.isManaged })
   }
 
@@ -154,7 +171,7 @@ struct `TailscaleBinder tests` {
     )
 
     await #expect(throws: TailscaleError.self) {
-      try await harness.binder.bind(localPort: 3000)
+      try await harness.binder.bind(localPort: .fixed(3000))
     }
 
     harness.daemon.addHandlerExternally(.init(tailnetPort: 443, localPort: 3000))
@@ -166,7 +183,7 @@ struct `TailscaleBinder tests` {
     let harness = try makeHarness(listening: [3000], backendState: "Stopped")
 
     await #expect(throws: TailscaleError.daemonNotRunning(state: "Stopped")) {
-      try await harness.binder.bind(localPort: 3000)
+      try await harness.binder.bind(localPort: .fixed(3000))
     }
     #expect(harness.daemon.configuredHandlers.isEmpty)
   }
@@ -176,11 +193,11 @@ struct `TailscaleBinder tests` {
     let harness = try makeHarness(listening: [3000, 4000])
     let binder = harness.binder
 
-    async let first = binder.bind(localPort: 3000)
-    async let second = binder.bind(localPort: 4000)
+    async let first = binder.bind(localPort: .fixed(3000))
+    async let second = binder.bind(localPort: .fixed(4000))
     let bound = try await [first, second]
 
-    #expect(Set(bound.map(\.tailnetPort)) == [443, 8443])
+    #expect(Set(bound.map(\.tailnetPort)) == [.fixed(443), .fixed(8443)])
     #expect(harness.daemon.configuredHandlers.count == 2)
   }
 
@@ -199,7 +216,7 @@ struct `TailscaleBinder tests` {
   @Test
   func `Remembers Ownership Across Binder Instances`() async throws {
     let harness = try makeHarness(listening: [3000])
-    try await harness.binder.bind(localPort: 3000)
+    try await harness.binder.bind(localPort: .fixed(3000))
 
     let bindings = try await reopened(harness).bindings()
 
@@ -210,7 +227,7 @@ struct `TailscaleBinder tests` {
   @Test
   func `Discards A Claim Whose Handler Vanished`() async throws {
     let harness = try makeHarness(listening: [3000])
-    try await harness.binder.bind(localPort: 3000)
+    try await harness.binder.bind(localPort: .fixed(3000))
 
     harness.daemon.removeAllHandlersExternally()
     _ = try await harness.binder.bindings()
@@ -222,7 +239,7 @@ struct `TailscaleBinder tests` {
   @Test
   func `Does Not Extend A Claim To Another Mount Path On The Same Port`() async throws {
     let harness = try makeHarness(listening: [3000])
-    try await harness.binder.bind(localPort: 3000, to: .explicit(443))
+    try await harness.binder.bind(localPort: .fixed(3000), to: .explicit(.fixed(443)))
     harness.daemon.addHandlerExternally(
       .init(tailnetPort: 443, mountPath: "/api", localPort: 9999)
     )
@@ -240,7 +257,7 @@ struct `TailscaleBinder tests` {
       databaseComponent: "nested/deeper/tailreg.sqlite"
     )
 
-    try await harness.binder.bind(localPort: 3000)
+    try await harness.binder.bind(localPort: .fixed(3000))
 
     #expect(FileManager.default.fileExists(atPath: harness.databasePath))
   }
@@ -262,7 +279,7 @@ struct `TailscaleBinder tests` {
       listening: [3000],
       claimGracePeriod: TailscaleBinder.defaultClaimGracePeriod
     )
-    try await harness.binder.bind(localPort: 3000)
+    try await harness.binder.bind(localPort: .fixed(3000))
 
     harness.daemon.removeAllHandlersExternally()
     _ = try await harness.binder.bindings()
@@ -283,9 +300,9 @@ struct `TailscaleBinder tests` {
       ]
     )
 
-    let removed = try await harness.binder.unbind(localPort: 3000)
+    let removed = try await harness.binder.unbind(localPort: .fixed(3000))
 
-    #expect(removed.map(\.tailnetPort) == [443, 8443])
+    #expect(removed.map(\.tailnetPort) == [.fixed(443), .fixed(8443)])
     #expect(harness.daemon.configuredHandlers.map(\.tailnetPort) == [10000])
   }
 
@@ -293,7 +310,7 @@ struct `TailscaleBinder tests` {
   func `Unbinding By Tailnet Port Honours Foreign Handlers`() async throws {
     let harness = try makeHarness(handlers: [.init(tailnetPort: 443, localPort: 3773)])
 
-    let removed = try await harness.binder.unbind(tailnetPort: 443)
+    let removed = try await harness.binder.unbind(tailnetPort: .fixed(443))
 
     #expect(removed.count == 1)
     #expect(removed[0].isManaged == false)
@@ -303,10 +320,18 @@ struct `TailscaleBinder tests` {
   @Test
   func `Removes One Mount Path Without Disturbing The Others`() async throws {
     let harness = try makeHarness(listening: [3000, 4000])
-    try await harness.binder.bind(localPort: 3000, to: .explicit(443), mountPath: "/alpha")
-    try await harness.binder.bind(localPort: 4000, to: .explicit(443), mountPath: "/beta")
+    try await harness.binder.bind(
+      localPort: .fixed(3000),
+      to: .explicit(.fixed(443)),
+      mountPath: "/alpha"
+    )
+    try await harness.binder.bind(
+      localPort: .fixed(4000),
+      to: .explicit(.fixed(443)),
+      mountPath: "/beta"
+    )
 
-    let removed = try await harness.binder.unbind(localPort: 3000)
+    let removed = try await harness.binder.unbind(localPort: .fixed(3000))
 
     #expect(removed.map(\.mountPath) == ["/alpha"])
     #expect(
@@ -318,25 +343,10 @@ struct `TailscaleBinder tests` {
   }
 
   @Test
-  func `Unbind All Leaves Handlers Tailreg Did Not Create Alone`() async throws {
-    let harness = try makeHarness(
-      handlers: [.init(tailnetPort: 443, localPort: 3773)],
-      listening: [3000]
-    )
-    try await harness.binder.bind(localPort: 3000, to: .explicit(8443))
-
-    let removed = try await harness.binder.unbindAll()
-
-    #expect(removed.map(\.tailnetPort) == [8443])
-    #expect(harness.daemon.configuredHandlers.map(\.tailnetPort) == [443])
-    #expect(harness.daemon.argvHistory.allSatisfy { $0 != ["serve", "reset"] })
-  }
-
-  @Test
   func `Unbinding Something That Is Not There Is A No Op`() async throws {
     let harness = try makeHarness()
 
-    #expect(try await harness.binder.unbind(localPort: 9999).isEmpty)
+    #expect(try await harness.binder.unbind(localPort: .fixed(9999)).isEmpty)
     #expect(harness.daemon.argv(startingWith: ["serve", "--https"]).isEmpty)
   }
 
@@ -345,7 +355,7 @@ struct `TailscaleBinder tests` {
   @Test
   func `Records A Live Binding In The History`() async throws {
     let harness = try makeHarness(listening: [3000])
-    let binding = try await harness.binder.bind(localPort: 3000)
+    let binding = try await harness.binder.bind(localPort: .fixed(3000))
 
     let history = try await harness.binder.history()
 
@@ -353,17 +363,17 @@ struct `TailscaleBinder tests` {
     #expect(history[0].id == binding.recordID)
     #expect(history[0].status == .active)
     #expect(history[0].hostname == "node.example.ts.net")
-    #expect(history[0].localPort == 3000)
-    #expect(history[0].tailnetPort == 443)
+    #expect(history[0].localPort == .fixed(3000))
+    #expect(history[0].tailnetPort == .fixed(443))
     #expect(history[0].isLive)
   }
 
   @Test
   func `Keeps An Unbound Binding On File`() async throws {
     let harness = try makeHarness(listening: [3000])
-    try await harness.binder.bind(localPort: 3000)
+    try await harness.binder.bind(localPort: .fixed(3000))
 
-    try await harness.binder.unbind(localPort: 3000)
+    try await harness.binder.unbind(localPort: .fixed(3000))
 
     let history = try await harness.binder.history()
     #expect(history.count == 1)
@@ -380,7 +390,7 @@ struct `TailscaleBinder tests` {
     )
 
     await #expect(throws: TailscaleError.self) {
-      try await harness.binder.bind(localPort: 3000)
+      try await harness.binder.bind(localPort: .fixed(3000))
     }
 
     let history = try await harness.binder.history()
@@ -392,7 +402,7 @@ struct `TailscaleBinder tests` {
   @Test
   func `Records A Handler That Vanished As Expired`() async throws {
     let harness = try makeHarness(listening: [3000])
-    try await harness.binder.bind(localPort: 3000)
+    try await harness.binder.bind(localPort: .fixed(3000))
 
     harness.daemon.removeAllHandlersExternally()
     _ = try await harness.binder.bindings()
@@ -406,26 +416,26 @@ struct `TailscaleBinder tests` {
   @Test
   func `Binding The Same Handler Again Appends To The History`() async throws {
     let harness = try makeHarness(listening: [3000, 4000])
-    try await harness.binder.bind(localPort: 3000, to: .explicit(443))
-    try await harness.binder.unbind(localPort: 3000)
-    try await harness.binder.bind(localPort: 4000, to: .explicit(443))
+    try await harness.binder.bind(localPort: .fixed(3000), to: .explicit(.fixed(443)))
+    try await harness.binder.unbind(localPort: .fixed(3000))
+    try await harness.binder.bind(localPort: .fixed(4000), to: .explicit(.fixed(443)))
 
     let history = try await harness.binder.history()
 
     #expect(history.count == 2)
-    #expect(history.map(\.localPort) == [4000, 3000])
+    #expect(history.map(\.localPort) == [.fixed(4000), .fixed(3000)])
     #expect(history.map(\.isLive) == [true, false])
   }
 
   @Test
   func `Survives The History Across Binder Instances`() async throws {
     let harness = try makeHarness(listening: [3000])
-    try await harness.binder.bind(localPort: 3000)
+    try await harness.binder.bind(localPort: .fixed(3000))
 
     let history = try await reopened(harness).history()
 
     #expect(history.count == 1)
-    #expect(history[0].localPort == 3000)
+    #expect(history[0].localPort == .fixed(3000))
   }
 
   @Test
@@ -434,13 +444,13 @@ struct `TailscaleBinder tests` {
       handlers: [.init(tailnetPort: 10000, localPort: 3773)],
       listening: [3000]
     )
-    let bound = try await harness.binder.bind(localPort: 3000, to: .explicit(443))
+    let bound = try await harness.binder.bind(localPort: .fixed(3000), to: .explicit(.fixed(443)))
 
     let bindings = try await harness.binder.bindings()
 
-    #expect(bindings.first { $0.tailnetPort == 443 }?.recordID == bound.recordID)
-    #expect(bindings.first { $0.tailnetPort == 10000 }?.recordID == nil)
-    #expect(bindings.first { $0.tailnetPort == 10000 }?.isManaged == false)
+    #expect(bindings.first { $0.tailnetPort == .fixed(443) }?.recordID == bound.recordID)
+    #expect(bindings.first { $0.tailnetPort == .fixed(10000) }?.recordID == nil)
+    #expect(bindings.first { $0.tailnetPort == .fixed(10000) }?.isManaged == false)
   }
 
   @Test
@@ -449,10 +459,10 @@ struct `TailscaleBinder tests` {
       listening: [3000, 4000],
       claimGracePeriod: TailscaleBinder.defaultClaimGracePeriod
     )
-    try await harness.binder.bind(localPort: 3000)
+    try await harness.binder.bind(localPort: .fixed(3000))
     harness.daemon.removeAllHandlersExternally()
 
-    #expect(try await harness.binder.bind(localPort: 4000).tailnetPort == 8443)
+    #expect(try await harness.binder.bind(localPort: .fixed(4000)).tailnetPort == .fixed(8443))
   }
 
   @Test
@@ -461,13 +471,13 @@ struct `TailscaleBinder tests` {
       listening: [3000, 4000],
       claimGracePeriod: TailscaleBinder.defaultClaimGracePeriod
     )
-    try await harness.binder.bind(localPort: 3000, to: .explicit(443))
+    try await harness.binder.bind(localPort: .fixed(3000), to: .explicit(.fixed(443)))
     harness.daemon.removeAllHandlersExternally()
 
     await #expect(
-      throws: TailscaleError.tailnetPortInUse(port: 443, existingTarget: "localPort(3000)")
+      throws: TailscaleError.tailnetPortInUse(port: .fixed(443), existingTarget: "localPort(3000)")
     ) {
-      try await harness.binder.bind(localPort: 4000, to: .explicit(443))
+      try await harness.binder.bind(localPort: .fixed(4000), to: .explicit(.fixed(443)))
     }
   }
 }

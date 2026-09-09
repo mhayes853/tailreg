@@ -37,8 +37,8 @@ struct TailscaleCLI: Sendable {
   // MARK: - Mutations
 
   func serve(
-    localPort: Int,
-    tailnetPort: Int,
+    localPort: PortNumber,
+    tailnetPort: PortNumber,
     mountPath: String
   ) async throws {
     var argv = ["serve", "--bg", "--yes", "--https=\(tailnetPort)"]
@@ -50,7 +50,7 @@ struct TailscaleCLI: Sendable {
   }
 
   func serveOff(
-    tailnetPort: Int,
+    tailnetPort: PortNumber,
     proto: TailscaleServeProtocol,
     mountPath: String
   ) async throws {

@@ -1,5 +1,6 @@
 import Foundation
 import TailregCore
+import TailregTestSupport
 import Testing
 
 @Suite(
@@ -7,7 +8,7 @@ import Testing
   .serialized
 )
 struct `Tailscale integration tests` {
-  static let integrationPort = 10000
+  static let integrationPort = PortNumber.fixed(10000)
 
   private func makeBinder(_ temp: TempDirectory) throws -> TailscaleBinder {
     try TailscaleBinder.standard(databasePath: temp.path("tailreg.sqlite"))
@@ -21,12 +22,12 @@ struct `Tailscale integration tests` {
     defer { listener.stop() }
 
     let binding = try await binder.bind(
-      localPort: listener.port.intValue,
+      localPort: listener.port,
       to: .explicit(Self.integrationPort)
     )
 
     #expect(binding.tailnetPort == Self.integrationPort)
-    #expect(binding.localPort == listener.port.intValue)
+    #expect(binding.localPort == listener.port)
     #expect(binding.isManaged)
     #expect(binding.hostname.hasSuffix(".ts.net"))
 
@@ -40,7 +41,7 @@ struct `Tailscale integration tests` {
   func `Refuses A Local Port With Nothing Listening`() async throws {
     let temp = try TempDirectory()
     let listener = try LoopbackListener()
-    let deadPort = listener.port.intValue
+    let deadPort = listener.port
     listener.stop()
 
     await #expect(throws: TailscaleError.noLocalServerListening(port: deadPort)) {
@@ -61,12 +62,12 @@ struct `Tailscale integration tests` {
     defer { Task { try? await binder.unbind(tailnetPort: Self.integrationPort) } }
 
     try await binder.bind(
-      localPort: alpha.port.intValue,
+      localPort: alpha.port,
       to: .explicit(Self.integrationPort),
       mountPath: "/alpha"
     )
     try await binder.bind(
-      localPort: beta.port.intValue,
+      localPort: beta.port,
       to: .explicit(Self.integrationPort),
       mountPath: "/beta"
     )
@@ -74,10 +75,10 @@ struct `Tailscale integration tests` {
     let both = try await binder.bindings().filter { $0.tailnetPort == Self.integrationPort }
     #expect(both.map(\.mountPath).sorted() == ["/alpha", "/beta"])
 
-    try await binder.unbind(localPort: alpha.port.intValue)
+    try await binder.unbind(localPort: alpha.port)
 
     let survivors = try await binder.bindings().filter { $0.tailnetPort == Self.integrationPort }
     #expect(survivors.map(\.mountPath) == ["/beta"])
-    #expect(survivors.map(\.localPort) == [beta.port.intValue])
+    #expect(survivors.map(\.localPort) == [beta.port])
   }
 }

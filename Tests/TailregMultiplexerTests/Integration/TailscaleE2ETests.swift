@@ -1,6 +1,7 @@
 import Foundation
 import SQLiteData
 import TailregCore
+import TailregTestSupport
 import Testing
 
 #if canImport(FoundationNetworking)
@@ -12,8 +13,8 @@ import Testing
   .serialized
 )
 struct `MUX Tailscale E2E tests` {
-  private static let ingressPort = 19_100
-  private static let tailnetPort = 8_443
+  private static let ingressPort = PortNumber.fixed(19_100)
+  private static let tailnetPort = PortNumber.fixed(8_443)
   private static let captureAdminPort = 19_106
 
   private enum FixtureError: Error {
@@ -81,7 +82,10 @@ struct `MUX Tailscale E2E tests` {
       let captureDatabase = try openTailregDatabase(path: databasePath, kind: .queue)
       for route in ["web-0", "web-1"] {
         let paths: [String] = try await captureDatabase.read { db -> [String] in
-          let routeRecord = try MuxRouteRecord.where { $0.route.eq(route) }.fetchOne(db)
+          let routeRecord =
+            try MuxRouteRecord
+            .where { $0.route.eq(MuxRouteName(rawValue: route)!) }
+            .fetchOne(db)
           guard let routeRecord else { return [String]() }
           return try HTTPExchangeRecord.page(for: routeRecord.id, limit: 100)
             .fetchAll(db)

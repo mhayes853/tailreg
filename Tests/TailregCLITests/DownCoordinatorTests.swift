@@ -1,6 +1,7 @@
 import Foundation
 import SQLiteData
 import TailregCore
+import TailregTestSupport
 import Testing
 import UUIDV7
 
@@ -20,7 +21,6 @@ struct `Down coordinator tests` {
   @Test
   func `A directory that was never brought up is reported, not created`() async throws {
     let context = try Context()
-    defer { context.cleanUp() }
 
     let result = try await context.coordinator().run(DownRequest())
 
@@ -33,9 +33,8 @@ struct `Down coordinator tests` {
   @Test
   func `A managed application is stopped and its run ended`() async throws {
     let context = try Context()
-    defer { context.cleanUp() }
     let project = try context.insertProject()
-    let process = try context.launchSleeper()
+    let process = try launchSleeper()
     try context.insertRun(project: project, name: "web", process: process)
 
     let result = try await context.coordinator().run(DownRequest())
@@ -54,9 +53,8 @@ struct `Down coordinator tests` {
   @Test
   func `A run whose start time does not match is not signalled`() async throws {
     let context = try Context()
-    defer { context.cleanUp() }
     let project = try context.insertProject()
-    let process = try context.launchSleeper()
+    let process = try launchSleeper()
     try context.insertRun(project: project, name: "web", process: process, startedAt: 1)
 
     let result = try await context.coordinator().run(DownRequest())
@@ -70,7 +68,6 @@ struct `Down coordinator tests` {
   @Test
   func `An attached application is detached rather than signalled`() async throws {
     let context = try Context()
-    defer { context.cleanUp() }
     let project = try context.insertProject()
     try await context.database.write { db in
       try AppRunRecord
@@ -88,10 +85,9 @@ struct `Down coordinator tests` {
   @Test
   func `Naming one application leaves the others running`() async throws {
     let context = try Context()
-    defer { context.cleanUp() }
     let project = try context.insertProject()
-    let web = try context.launchSleeper()
-    let api = try context.launchSleeper()
+    let web = try launchSleeper()
+    let api = try launchSleeper()
     try context.insertRun(project: project, name: "web", process: web)
     try context.insertRun(project: project, name: "api", process: api)
 
@@ -108,9 +104,8 @@ struct `Down coordinator tests` {
   @Test
   func `Stopping an application that is already down is not an error`() async throws {
     let context = try Context()
-    defer { context.cleanUp() }
     let project = try context.insertProject()
-    let process = try context.launchSleeper()
+    let process = try launchSleeper()
     try context.insertRun(project: project, name: "web", process: process)
 
     _ = try await context.coordinator().run(DownRequest())
@@ -123,7 +118,6 @@ struct `Down coordinator tests` {
   @Test
   func `An unknown application name is rejected`() async throws {
     let context = try Context()
-    defer { context.cleanUp() }
     _ = try context.insertProject()
 
     await #expect(throws: DownError.self) {
@@ -132,17 +126,19 @@ struct `Down coordinator tests` {
   }
 
   private struct Context {
-    let root: URL
+    let directory: TempDirectory
     let databasePath: String
     let database: any DatabaseWriter
 
+    /// On disk rather than in memory: `down` takes the runtime lock, and `FileLock` needs a real
+    /// path next to the database to take it against.
     init() throws {
-      root = FileManager.default.temporaryDirectory
-        .appendingPathComponent("tailreg-down-\(UUID().uuidString)")
-      try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-      databasePath = root.appendingPathComponent("tailreg.sqlite").path
-      database = try openTailregDatabase(path: databasePath)
+      directory = try TempDirectory()
+      databasePath = directory.path("tailreg.sqlite")
+      database = try TestDatabase.onDisk(in: directory)
     }
+
+    var root: URL { directory.url }
 
     func coordinator() -> DownCoordinator {
       DownCoordinator(
@@ -177,21 +173,6 @@ struct `Down coordinator tests` {
 
     func liveRunNames(_ project: UUIDV7) throws -> [String] {
       try database.read { db in try AppRunRecord.live(for: project).fetchAll(db) }.map(\.name)
-    }
-
-    /// Foundation's `Process` gives the child the spawning thread's signal mask, and Swift
-    /// concurrency threads block nearly everything. Applications launched by `up` get a clean
-    /// slate from `_exec`; these are launched directly, so the mask is cleared here.
-    func launchSleeper() throws -> LaunchedProcess {
-      var empty = sigset_t()
-      sigemptyset(&empty)
-      pthread_sigmask(SIG_SETMASK, &empty, nil)
-      return try SystemProcessLauncher()
-        .launch(ProcessCommand(executable: "/bin/sleep", arguments: ["60"]))
-    }
-
-    func cleanUp() {
-      try? FileManager.default.removeItem(at: root)
     }
   }
 }

@@ -1,3 +1,5 @@
+import SQLiteData
+
 public enum TailscaleServeProtocol: String, Sendable, Codable, CaseIterable, Equatable {
   case https
   case http
@@ -15,9 +17,13 @@ public enum TailscaleServeProtocol: String, Sendable, Codable, CaseIterable, Equ
   }
 }
 
+extension TailscaleServeProtocol: QueryBindable, QueryDecodable {}
+
 public enum TailscaleTailnetPort: Sendable, Equatable {
   case auto
-  case explicit(Int)
+  case explicit(PortNumber)
 
-  public static let autoAllocationPool = [443, 8443, 10000]
+  public static let autoAllocationPool: [PortNumber] = [
+    PortNumber(rawValue: 443)!, PortNumber(rawValue: 8443)!, PortNumber(rawValue: 10000)!
+  ]
 }

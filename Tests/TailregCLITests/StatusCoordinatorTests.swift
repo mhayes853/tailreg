@@ -1,6 +1,7 @@
 import Foundation
 import SQLiteData
 import TailregCore
+import TailregTestSupport
 import Testing
 import UUIDV7
 
@@ -20,7 +21,6 @@ struct `Status coordinator tests` {
   @Test
   func `A directory that was never brought up is described, not recorded`() async throws {
     let context = try Context()
-    defer { context.cleanUp() }
 
     let report = try await context.coordinator().run(StatusRequest())
 
@@ -43,10 +43,9 @@ struct `Status coordinator tests` {
   @Test
   func `A run whose process is gone is reported as stale, not reclaimed`() async throws {
     let context = try Context()
-    defer { context.cleanUp() }
     let project = try context.insertProject()
     try context.insertRuntime(project: project)
-    try context.insertRun(project: project, name: "web", pid: try await context.reapedPID())
+    try context.insertRun(project: project, name: "web", pid: try await reapedPID())
 
     let report = try await context.coordinator().run(StatusRequest())
 
@@ -62,7 +61,6 @@ struct `Status coordinator tests` {
   @Test
   func `A managed run with no recorded start time is unverified, not a problem`() async throws {
     let context = try Context()
-    defer { context.cleanUp() }
     let project = try context.insertProject()
     try context.insertRuntime(project: project)
     try context.insertRun(project: project, name: "web", pid: Int(getpid()), startedAt: nil)
@@ -78,7 +76,6 @@ struct `Status coordinator tests` {
   @Test
   func `An attached application is judged by its upstream`() async throws {
     let context = try Context()
-    defer { context.cleanUp() }
     let project = try context.insertProject()
     try context.insertRuntime(project: project)
     let listening = try context.insertRoute(project: project, route: "api", port: 19_201)
@@ -100,7 +97,6 @@ struct `Status coordinator tests` {
   @Test
   func `A tailnet runtime with no live binding is reported as missing`() async throws {
     let context = try Context()
-    defer { context.cleanUp() }
     let project = try context.insertProject()
     try context.insertRuntime(project: project, exposure: .tailnet)
 
@@ -116,7 +112,6 @@ struct `Status coordinator tests` {
   @Test
   func `A recorded binding supplies the project URL`() async throws {
     let context = try Context()
-    defer { context.cleanUp() }
     let project = try context.insertProject()
     let runtime = try context.insertRuntime(project: project, exposure: .tailnet)
     let binding = try context.insertBinding(localPort: runtime.ingressPort)
@@ -146,7 +141,6 @@ struct `Status coordinator tests` {
   @Test
   func `A binding that no run holds is reported`() async throws {
     let context = try Context()
-    defer { context.cleanUp() }
     let project = try context.insertProject()
     let runtime = try context.insertRuntime(project: project, exposure: .tailnet)
     try context.insertBinding(localPort: runtime.ingressPort)
@@ -161,7 +155,6 @@ struct `Status coordinator tests` {
   @Test
   func `A local runtime is reachable on the MUX listener`() async throws {
     let context = try Context()
-    defer { context.cleanUp() }
     let project = try context.insertProject()
     let runtime = try context.insertRuntime(project: project, exposure: .local)
 
@@ -177,7 +170,6 @@ struct `Status coordinator tests` {
   @Test
   func `A route with no owning run is reported`() async throws {
     let context = try Context()
-    defer { context.cleanUp() }
     let project = try context.insertProject()
     try context.insertRuntime(project: project)
     _ = try context.insertRoute(project: project, route: "api", port: 19_201)
@@ -192,7 +184,6 @@ struct `Status coordinator tests` {
   @Test
   func `An application running outside the configuration is named`() async throws {
     let context = try Context()
-    defer { context.cleanUp() }
     let project = try context.insertProject()
     try context.insertRuntime(project: project)
     let route = try context.insertRoute(project: project, route: "ghost", port: 19_203)
@@ -212,7 +203,6 @@ struct `Status coordinator tests` {
   @Test
   func `A MUX that does not answer is unreachable while its process lives`() async throws {
     let context = try Context()
-    defer { context.cleanUp() }
     let project = try context.insertProject()
     try context.insertRuntime(project: project)
 
@@ -227,7 +217,6 @@ struct `Status coordinator tests` {
   @Test
   func `Every known project is reported with all`() async throws {
     let context = try Context()
-    defer { context.cleanUp() }
     _ = try context.insertProject()
     let other = context.root.appendingPathComponent("elsewhere")
     try FileManager.default.createDirectory(at: other, withIntermediateDirectories: true)
@@ -242,19 +231,18 @@ struct `Status coordinator tests` {
   }
 
   private struct Context {
-    let root: URL
+    let directory: TempDirectory
     let databasePath: String
     let database: any DatabaseWriter
 
     init() throws {
-      root = FileManager.default.temporaryDirectory
-        .appendingPathComponent("tailreg-status-\(UUID().uuidString)")
-      try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-      databasePath = root.appendingPathComponent("tailreg.sqlite").path
-      database = try openTailregDatabase(path: databasePath)
-      try Data(Self.configuration.utf8)
-        .write(to: root.appendingPathComponent("tailreg.toml"))
+      directory = try TempDirectory()
+      databasePath = directory.path("tailreg.sqlite")
+      database = try TestDatabase.onDisk(in: directory)
+      try directory.makeFile("tailreg.toml", contents: Self.configuration)
     }
+
+    var root: URL { directory.url }
 
     /// `jobs` is deliberately unexposed, so the report has to distinguish "no route by choice"
     /// from "no route because nothing is running".
@@ -304,8 +292,8 @@ struct `Status coordinator tests` {
         projectID: project.id,
         pid: Int(getpid()),
         processStartedAt: processStartTime(of: getpid()),
-        ingressPort: 39_428,
-        adminPort: 39_429,
+        ingressPort: .fixed(39_428),
+        adminPort: .fixed(39_429),
         exposure: exposure
       )
       try database.write { db in try MuxRunRecord.insert { runtime }.execute(db) }
@@ -320,7 +308,7 @@ struct `Status coordinator tests` {
       let record = MuxRouteRecord(
         muxID: project.muxID,
         name: route,
-        route: route,
+        route: MuxRouteName(rawValue: route)!,
         upstreamURL: "http://127.0.0.1:\(port)",
         createdAt: Date()
       )
@@ -367,7 +355,10 @@ struct `Status coordinator tests` {
     }
 
     @discardableResult
-    func insertBinding(localPort: Int, tailnetPort: Int = 443) throws -> TailscaleBindingRecord {
+    func insertBinding(
+      localPort: PortNumber,
+      tailnetPort: PortNumber = .fixed(443)
+    ) throws -> TailscaleBindingRecord {
       let binding = TailscaleBindingRecord(
         hostname: "demo.tail1234.ts.net",
         localPort: localPort,
@@ -381,33 +372,8 @@ struct `Status coordinator tests` {
       return binding
     }
 
-    /// A PID that is certainly free: the process is waited on before the number is handed back,
-    /// so it is neither alive nor a zombie that `kill(pid, 0)` would still find.
-    func reapedPID() async throws -> Int {
-      var empty = sigset_t()
-      sigemptyset(&empty)
-      pthread_sigmask(SIG_SETMASK, &empty, nil)
-      let process = try SystemProcessLauncher()
-        .launch(ProcessCommand(executable: "/bin/sleep", arguments: ["60"]))
-      process.terminate()
-      _ = await process.waitForExit()
-      return Int(process.pid)
-    }
-
     func liveRunNames(_ project: ProjectRecord) throws -> [String] {
       try database.read { db in try AppRunRecord.live(for: project.id).fetchAll(db) }.map(\.name)
-    }
-
-    func cleanUp() {
-      try? FileManager.default.removeItem(at: root)
-    }
-  }
-
-  private struct StubPortProbe: PortProbe {
-    let listening: Set<Int>
-
-    func isListening(host: String, port: PortNumber) async -> Bool {
-      listening.contains(port.intValue)
     }
   }
 }

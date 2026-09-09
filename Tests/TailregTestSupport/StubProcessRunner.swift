@@ -1,0 +1,62 @@
+import Foundation
+import TailregCore
+
+public final class StubProcessRunner: ProcessRunner, @unchecked Sendable {
+  private struct Response {
+    let prefix: [String]
+    let result: ProcessResult
+  }
+
+  public init() {}
+
+  private let lock = NSLock()
+  private var responses: [Response] = []
+  private var launchFailure: String?
+
+  public func stub(
+    _ prefix: [String],
+    stdout: String = "",
+    stderr: String = "",
+    exitCode: Int32 = 0
+  ) {
+    lock.withLock {
+      responses.append(Response(prefix: prefix, result: Self.result(stdout, stderr, exitCode)))
+    }
+  }
+
+  public func failToLaunch(message: String = "no such file") {
+    lock.withLock { launchFailure = message }
+  }
+
+  public func run(
+    executable: String,
+    arguments: [String],
+    environment: [String: String]?,
+    workingDirectory: String?
+  ) async throws -> ProcessResult {
+    let outcome: Result<ProcessResult, any Error> = lock.withLock {
+      if let launchFailure {
+        return .failure(
+          ProcessRunnerError.launchFailed(executable: executable, message: launchFailure)
+        )
+      }
+      guard let response = responses.first(where: { arguments.starts(with: $0.prefix) }) else {
+        return .success(ProcessResult(exitCode: 0, standardOutput: Data(), standardError: Data()))
+      }
+      return .success(response.result)
+    }
+    return try outcome.get()
+  }
+
+  private static func result(
+    _ stdout: String,
+    _ stderr: String,
+    _ exitCode: Int32
+  ) -> ProcessResult {
+    ProcessResult(
+      exitCode: exitCode,
+      standardOutput: Data(stdout.utf8),
+      standardError: Data(stderr.utf8)
+    )
+  }
+}

@@ -1,4 +1,5 @@
 import Foundation
+import Operation
 
 #if canImport(Darwin)
   import Darwin
@@ -72,12 +73,6 @@ public enum TerminationOutcome: Hashable, Sendable, CustomStringConvertible {
   /// Escalation did not work: the target was still there after SIGKILL. Almost always a process
   /// blocked in an uninterruptible wait, and the one outcome that means it is still running.
   case unresponsive(after: Duration)
-
-  /// Whether the target ended up stopped, however it got there.
-  public var isStopped: Bool {
-    if case .unresponsive = self { return false }
-    return true
-  }
 
   public var description: String {
     switch self {
@@ -161,12 +156,25 @@ public struct ProcessTerminator<C: Clock>: Sendable where C.Instant.Duration == 
     observing observation: ProcessExitObservation,
     within limit: Duration
   ) async -> Bool {
-    let deadline = clock.now.advanced(by: limit)
-    while clock.now < deadline {
-      if hasExited(target, observing: observation) { return true }
-      guard (try? await clock.sleep(for: observation.pollInterval)) != nil else { break }
-    }
-    return hasExited(target, observing: observation)
+    let exited: Void? = try? await poll(
+      $processHasExited(target, observing: observation),
+      within: limit,
+      every: .constant(OperationDuration(duration: observation.pollInterval)),
+      delayedBy: .clock(clock),
+      clock: clock
+    )
+    // A cancelled sleep leaves the budget unspent, so the process still gets the look the
+    // deadline would have given it.
+    return exited != nil || hasExited(target, observing: observation)
+  }
+
+  /// One look at whether the target has exited.
+  @OperationRequest
+  private func processHasExited(
+    _ target: TerminationTarget,
+    observing observation: ProcessExitObservation
+  ) async -> PollAttempt<Void> {
+    self.hasExited(target, observing: observation) ? .ready(()) : .notYet
   }
 
   private func hasExited(

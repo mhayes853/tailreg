@@ -39,7 +39,7 @@ enum TailscaleServeStatus {
     }
 
     for (portText, entry) in config.tcp ?? [:] {
-      guard let forward = entry.tcpForward, let port = Int(portText) else { continue }
+      guard let forward = entry.tcpForward, let port = PortNumber(text: portText) else { continue }
       bindings.append(
         TailscaleBinding(
           hostname: hostname,
@@ -59,16 +59,19 @@ enum TailscaleServeStatus {
   }
 
   private static func webProtocol(
-    forPort port: Int,
+    forPort port: PortNumber,
     tcp: [String: ServeConfigDTO.TCPEntry]?
   ) -> TailscaleServeProtocol {
-    guard let entry = tcp?[String(port)] else { return .https }
+    guard let entry = tcp?[port.description] else { return .https }
     return entry.http == true ? .http : .https
   }
 
-  private static func splitHostPort(_ value: String) -> (host: String, port: Int)? {
+  /// A serve entry whose port is not one anything can be reached on is skipped rather than
+  /// reported: the daemon's configuration is not Tailreg's to validate, and one unusable entry
+  /// must not cost the caller every other binding on the node.
+  private static func splitHostPort(_ value: String) -> (host: String, port: PortNumber)? {
     guard let separator = value.lastIndex(of: ":") else { return nil }
-    guard let port = Int(value[value.index(after: separator)...]) else { return nil }
+    guard let port = PortNumber(text: value[value.index(after: separator)...]) else { return nil }
     return (String(value[..<separator]), port)
   }
 
@@ -132,7 +135,7 @@ private struct ServeConfigDTO: Decodable {
       if let proxy {
         guard let components = URLComponents(string: proxy),
           let host = components.host,
-          let port = components.port,
+          let port = components.port.flatMap(PortNumber.init),
           TailscaleServeStatus.isLoopback(host)
         else {
           return .proxy(proxy)

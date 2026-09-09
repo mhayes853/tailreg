@@ -1,6 +1,7 @@
 import Dispatch
 import Foundation
 import TailregCore
+import TailregTestSupport
 import Testing
 
 #if canImport(Glibc)
@@ -28,15 +29,6 @@ struct `SystemListeningProcessLocator tests` {
 
   @Test
   func `Reports Nothing Once The Listener Closes`() async throws {
-    let listener = try LoopbackListener()
-    let port = listener.port
-    listener.stop()
-
-    #expect(try await locator.processes(listeningOn: port).isEmpty)
-  }
-
-  @Test
-  func `Reports Nothing For A PortNumber With No Listener`() async throws {
     let listener = try LoopbackListener()
     let port = listener.port
     listener.stop()
@@ -177,12 +169,12 @@ struct `SystemListeningProcessLocator tests` {
     on port: PortNumber,
     until predicate: ([ListeningProcess]) -> Bool
   ) async throws -> [ListeningProcess] {
-    for _ in 0..<50 {
-      let found = try await locator.processes(listeningOn: port)
-      if predicate(found) { return found }
-      try await Task.sleep(for: .milliseconds(20))
-    }
-    return try await locator.processes(listeningOn: port)
+    try await eventually(
+      { try await locator.processes(listeningOn: port) },
+      until: predicate,
+      attempts: 50,
+      interval: .milliseconds(20)
+    )
   }
 
   /// Binds the same port on both families. The v4 listener picks the port, so the v6 bind can

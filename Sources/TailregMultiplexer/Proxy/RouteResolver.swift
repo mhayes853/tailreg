@@ -1,6 +1,13 @@
 import Hummingbird
 import SQLiteData
+import TailregCore
 import UUIDV7
+
+/// What the MUX does with a request whose first path segment names no live route.
+public enum UnmatchedPathPolicy: Equatable, Sendable {
+  case reject
+  case lastSelectedRouteCompatibility
+}
 
 struct ResolvedMuxRoute: Sendable {
   let binding: MultiplexerBinding
@@ -33,7 +40,9 @@ struct MuxRouteResolver: Sendable {
   func resolve(_ request: Request) async throws -> ResolvedMuxRoute? {
     let path = request.uri.path
     if let route = firstSegment(path), let binding = try await binding(route: route) {
-      let remainder = path.dropFirst(route.count + 1)
+      // Everything after the first segment, however many slashes led into it: `//web/x` has to
+      // forward `/x` rather than a remainder measured from a single assumed slash.
+      let remainder = path.drop(while: { $0 == "/" }).dropFirst(route.rawValue.count)
       let relativePath = remainder.isEmpty ? "/" : String(remainder)
       return ResolvedMuxRoute(
         binding: binding,
@@ -48,7 +57,7 @@ struct MuxRouteResolver: Sendable {
     }
 
     guard unmatchedPathPolicy == .lastSelectedRouteCompatibility else { return nil }
-    if let route = request.cookies[cookieName]?.value,
+    if let route = request.cookies[cookieName].flatMap({ MuxRouteName(rawValue: $0.value) }),
       let binding = try await binding(route: route)
     {
       return ResolvedMuxRoute(
@@ -62,11 +71,15 @@ struct MuxRouteResolver: Sendable {
     return nil
   }
 
-  private func firstSegment(_ path: String) -> String? {
-    path.split(separator: "/", omittingEmptySubsequences: true).first.map { String($0) }
+  /// The first path segment, when it could name a route at all.
+  ///
+  /// A segment that is not a route name cannot match one, so it never reaches the database.
+  private func firstSegment(_ path: String) -> MuxRouteName? {
+    path.split(separator: "/", omittingEmptySubsequences: true).first
+      .flatMap { MuxRouteName(rawValue: String($0)) }
   }
 
-  private func binding(route: String) async throws -> MultiplexerBinding? {
+  private func binding(route: MuxRouteName) async throws -> MultiplexerBinding? {
     try await database.read { database in
       return try MuxRouteQueries.live(muxID: muxID, route: route, in: database)
         .map { try MultiplexerBinding(record: $0, pathPolicy: pathPolicy) }

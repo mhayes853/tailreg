@@ -96,7 +96,10 @@ the resolved URLs before returning. The child then follows the same supervision
 and cleanup path as a foreground invocation.
 
 An attached application has no managed process. Its route and the MUX remain
-live after `tailreg up` returns because Tailreg does not own that process.
+live after `tailreg up` returns because Tailreg does not own that process. The
+attach URL already names a port, so `--attach` with `--port` is rejected rather
+than resolved: the two can disagree, and `up` would then wait for readiness on
+one port while publishing the other.
 
 ## 4. Project configuration
 
@@ -298,9 +301,8 @@ may expose MUX and Tailscale diagnostics without mixing them into normal output.
 Foreground and background execution must write through the same per-application
 sink so that log behavior does not depend on how `up` was launched. The current
 background invocation log is only a bootstrap diagnostic and is not the durable
-interface for this command. Existing `LogRecord` rows belong to Tailscale
-bindings, so application output needs its own run-scoped records or durable file
-reference rather than overloading that table.
+interface for this command. The `logs` table in the schema is unused legacy;
+application output needs its own run-scoped records rather than reviving it.
 
 ### `tailreg requests` and `tailreg request`
 
@@ -347,6 +349,35 @@ enough; no store protocol, actor cache, or global daemon is required.
 `MuxRunRecord` additionally records how the runtime was published, because that
 is not recoverable from anything else once the invocation that chose it is
 gone.
+
+### Operations and what they record
+
+Every interaction the CLI has with something outside its own process is an
+`OperationRequest` from `swift-operation`: bringing the MUX up, binding a
+tailnet port, launching or stopping an application, listing routes through the
+admin API, and each tick of a readiness poll. Plain database and file writes are
+not operations of their own; they belong to whichever operation they are part
+of, so publishing a route and pointing the run at it is one unit rather than
+two.
+
+Being an operation is what makes retry a stated policy rather than a local
+`for` loop, and retry is opted into per operation, never applied to a scope. The
+two that retry — starting the MUX and binding a tailnet port — do so for the
+same reason: both resolve a free port and then claim it with nothing holding it
+in between, so losing to a simultaneous invocation is ordinary. Nothing that
+spawns or signals a process retries, because a request that timed out may
+already have taken effect.
+
+`up`, `down`, and `status` each install one `OperationTransform` for the length
+of the invocation, which records every operation run inside it into
+`commandRuns` and `operationRuns` — the invocation, and the tree of operations
+it ran, with a parent per operation and a fold of every attempt at the same one.
+An operation added later is recorded because it is an operation, not because a
+call site remembered to record it. Nothing is written until the invocation ends:
+a poll ticking every hundred milliseconds under the runtime lock cannot be
+allowed to put a serialized write in the path other invocations are waiting on.
+The cost is that a killed command leaves only its `commandRuns` row, still
+reading `in-progress`.
 
 ## 8. Failure behavior and deferred work
 

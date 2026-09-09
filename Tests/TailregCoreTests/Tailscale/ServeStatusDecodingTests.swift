@@ -1,4 +1,5 @@
 import Foundation
+import TailregTestSupport
 import Testing
 
 @testable import TailregCore
@@ -18,7 +19,7 @@ struct `Serve status decoding tests` {
       binaryPath: "/usr/bin/tailscale",
       runner: runner,
       portProbe: StubPortProbe(),
-      database: try openTailregDatabase(path: temp.path("tailreg.sqlite"), kind: .queue)
+      database: try TestDatabase.onDisk(in: temp)
     )
     .bindings()
   }
@@ -30,9 +31,9 @@ struct `Serve status decoding tests` {
     #expect(decoded.count == 1)
     let binding = try #require(decoded.first)
     #expect(binding.hostname == "omarchy.tailc6bff1.ts.net")
-    #expect(binding.tailnetPort == 443)
+    #expect(binding.tailnetPort == .fixed(443))
     #expect(binding.proto == .https)
-    #expect(binding.target == .localPort(3773))
+    #expect(binding.target == .localPort(.fixed(3773)))
     #expect(binding.isManaged == false)
   }
 
@@ -41,7 +42,7 @@ struct `Serve status decoding tests` {
     let decoded = try await bindings(from: Fixtures.multiPathServeStatus)
 
     #expect(decoded.map(\.mountPath) == ["/", "/api", "/static"])
-    #expect(decoded.allSatisfy { $0.tailnetPort == 8443 })
+    #expect(decoded.allSatisfy { $0.tailnetPort == .fixed(8443) })
     #expect(decoded.allSatisfy { $0.funnel })
   }
 
@@ -51,7 +52,7 @@ struct `Serve status decoding tests` {
       try await bindings(from: Fixtures.multiPathServeStatus).first { $0.mountPath == "/api" }
     )
 
-    #expect(api.target == .localPort(9000))
+    #expect(api.target == .localPort(.fixed(9000)))
   }
 
   @Test
@@ -68,11 +69,11 @@ struct `Serve status decoding tests` {
   func `Distinguishes Raw Forwards From TLS Terminated Ones`() async throws {
     let decoded = try await bindings(from: Fixtures.tcpForwardServeStatus)
 
-    let raw = try #require(decoded.first { $0.tailnetPort == 2222 })
+    let raw = try #require(decoded.first { $0.tailnetPort == .fixed(2222) })
     #expect(raw.proto == .tcp)
-    #expect(raw.target == .localPort(22))
+    #expect(raw.target == .localPort(.fixed(22)))
 
-    let terminated = try #require(decoded.first { $0.tailnetPort == 10000 })
+    let terminated = try #require(decoded.first { $0.tailnetPort == .fixed(10000) })
     #expect(terminated.proto == .tlsTerminatedTCP)
   }
 
@@ -105,7 +106,9 @@ struct `Serve status decoding tests` {
   @Test
   func `Orders Bindings By Port Rather Than JSON Key Order`() async throws {
     #expect(
-      try await bindings(from: Fixtures.tcpForwardServeStatus).map(\.tailnetPort) == [2222, 10000]
+      try await bindings(from: Fixtures.tcpForwardServeStatus).map(\.tailnetPort) == [
+        .fixed(2222), .fixed(10000)
+      ]
     )
   }
 }

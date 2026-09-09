@@ -14,9 +14,10 @@ enum TailregMultiplexerE2EFixture {
     let captureAdminPort = 19_106
     let astroUpstreamPort = 19_107
     let tanStackStartUpstreamPort = 19_108
-    let ingressPort = 19_100
-    let secureCookies = ProcessInfo.processInfo.environment["TAILREG_E2E_SECURE_COOKIES"] == "1"
-    let routingCookieName = secureCookies ? "__Host-tailreg-route" : "tailreg-route"
+    let ingressPort = PortNumber(rawValue: 19_100)!
+    let publicScheme: PublicScheme =
+      ProcessInfo.processInfo.environment["TAILREG_E2E_SECURE_COOKIES"] == "1" ? .https : .http
+    let routingCookieName = publicScheme == .https ? "__Host-tailreg-route" : "tailreg-route"
     let databasePath =
       ProcessInfo.processInfo.environment["TAILREG_E2E_DATABASE_PATH"] ?? ":memory:"
     let database = try openTailregDatabase(path: databasePath, kind: .queue)
@@ -29,7 +30,7 @@ enum TailregMultiplexerE2EFixture {
         ingressPort: ingressPort,
         unmatchedPathPolicy: .lastSelectedRouteCompatibility,
         routingCookieName: routingCookieName,
-        secureCookies: secureCookies
+        publicScheme: publicScheme
       ),
       database: database
     )
@@ -46,45 +47,27 @@ enum TailregMultiplexerE2EFixture {
         name: name,
         upstream: URL(string: "http://127.0.0.1:\(port)")!
       )
-      precondition(binding.route == route)
+      precondition(binding.route.rawValue == route)
     }
     let fullStackFrontend = try await multiplexer.registerRoute(
       name: "Storefront",
-      route: "web",
+      route: MuxRouteName(rawValue: "web")!,
       upstream: URL(string: "http://127.0.0.1:19109")!
     )
     let fullStackBackend = try await multiplexer.registerRoute(
       name: "Storefront API",
-      route: "api",
+      route: MuxRouteName(rawValue: "api")!,
       upstream: URL(string: "http://127.0.0.1:19110")!
     )
-    precondition(fullStackFrontend.route == "web")
-    precondition(fullStackBackend.route == "api")
+    precondition(fullStackFrontend.route.rawValue == "web")
+    precondition(fullStackBackend.route.rawValue == "api")
 
-    guard let captureRecorder = multiplexer.captureRecorder else {
-      preconditionFailure("The E2E fixture requires capture storage")
-    }
     let captureAdmin = captureApplication(
       database: database,
-      recorder: captureRecorder,
+      recorder: multiplexer.captureRecorder,
       port: captureAdminPort
     )
-
-    let ingress = Application(
-      responder: MuxIngressResponder(
-        database: database,
-        muxID: multiplexer.configuration.id,
-        pathPolicy: multiplexer.configuration.pathPolicy,
-        unmatchedPathPolicy: multiplexer.configuration.unmatchedPathPolicy,
-        cookieName: multiplexer.configuration.routingCookieName,
-        secureCookies: multiplexer.configuration.secureCookies,
-        capturedHeaderPolicy: multiplexer.configuration.capturedHeaderPolicy,
-        captureRecorder: multiplexer.captureRecorder
-      ),
-      configuration: ApplicationConfiguration(
-        address: .hostname("127.0.0.1", port: ingressPort),
-        serverName: "tailreg-mux-ingress"
-      ),
+    let ingress = multiplexer.buildIngressApplication(
       services: [firstUpstream, secondUpstream, captureAdmin]
     )
     try await ingress.runService()
